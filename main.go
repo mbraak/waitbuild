@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/google/go-github/v90/github"
 )
 
@@ -47,22 +48,17 @@ func main() {
 }
 
 func run(sha, branch string, interval, appearTimeout, timeout time.Duration, notify bool) error {
-	var err error
-	if sha == "" {
-		if sha, err = git("rev-parse", "HEAD"); err != nil {
-			return err
-		}
-	}
-	if branch == "" {
-		if branch, err = git("rev-parse", "--abbrev-ref", "HEAD"); err != nil {
-			return err
-		}
-	}
-	remote, err := git("remote", "get-url", "origin")
+	info, err := repoInfo()
 	if err != nil {
 		return err
 	}
-	owner, repo, err := parseGitHubRemote(remote)
+	if sha == "" {
+		sha = info.sha
+	}
+	if branch == "" {
+		branch = info.branch
+	}
+	owner, repo, err := parseGitHubRemote(info.remote)
 	if err != nil {
 		return err
 	}
@@ -205,12 +201,43 @@ func githubToken() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func git(args ...string) (string, error) {
-	out, err := exec.Command("git", args...).Output()
+// gitInfo describes the repository the current directory belongs to.
+type gitInfo struct {
+	sha    string // full hash of HEAD
+	branch string // short branch name, or "HEAD" when detached
+	remote string // first URL of the "origin" remote
+}
+
+// repoInfo opens the repository containing the working directory (searching
+// parent directories like git does) and reads HEAD and the origin remote.
+func repoInfo() (gitInfo, error) {
+	repo, err := gogit.PlainOpenWithOptions(".", &gogit.PlainOpenOptions{
+		DetectDotGit:          true,
+		EnableDotGitCommonDir: true,
+	})
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return gitInfo{}, fmt.Errorf("opening git repository: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	head, err := repo.Head()
+	if err != nil {
+		return gitInfo{}, fmt.Errorf("reading HEAD: %w", err)
+	}
+	info := gitInfo{sha: head.Hash().String(), branch: "HEAD"}
+	if head.Name().IsBranch() {
+		info.branch = head.Name().Short()
+	}
+
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return gitInfo{}, fmt.Errorf("reading remote origin: %w", err)
+	}
+	urls := remote.Config().URLs
+	if len(urls) == 0 {
+		return gitInfo{}, errors.New("remote origin has no URL")
+	}
+	info.remote = urls[0]
+	return info, nil
 }
 
 func desktopNotify(title, message string) {

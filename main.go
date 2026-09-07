@@ -39,7 +39,16 @@ func main() {
 	appearTimeout := flag.Duration("appear-timeout", 3*time.Minute, "how long to wait for the first workflow run to show up")
 	timeout := flag.Duration("timeout", 45*time.Minute, "overall timeout")
 	notify := flag.Bool("notify", false, "show a desktop notification (macOS) when the build finishes")
+	testNotify := flag.Bool("test-notify", false, "send a test desktop notification and exit")
 	flag.Parse()
+
+	if *testNotify {
+		if err := testNotification(); err != nil {
+			fmt.Fprintln(os.Stderr, "waitbuild:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(*sha, *branch, *interval, *appearTimeout, *timeout, *notify); err != nil {
 		fmt.Fprintln(os.Stderr, "waitbuild:", err)
@@ -97,7 +106,7 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		if !ok {
 			title = fmt.Sprintf("Build of %s FAILED", branch)
 		}
-		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]))
+		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), notifyURL(owner, repo, sha, runs))
 	}
 	if !ok {
 		return errors.New("one or more workflow runs did not succeed")
@@ -245,10 +254,57 @@ func repoInfo() (gitInfo, error) {
 	return info, nil
 }
 
-func desktopNotify(title, message string) {
+// notifyURL picks the page a notification should open: the single failed run
+// when there is exactly one, otherwise the commit's checks page on GitHub.
+func notifyURL(owner, repo, sha string, runs []*github.WorkflowRun) string {
+	var failed []*github.WorkflowRun
+	for _, r := range runs {
+		if !successConclusions[r.GetConclusion()] {
+			failed = append(failed, r)
+		}
+	}
+	if len(failed) == 1 && failed[0].GetHTMLURL() != "" {
+		return failed[0].GetHTMLURL()
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/commit/%s/checks", owner, repo, sha)
+}
+
+// testNotification sends a notification through the same path run uses and
+// reports which tool delivered it, so the setup can be checked without a push.
+func testNotification() error {
+	url := "https://github.com/mbraak/waitbuild"
+	switch desktopNotify("waitbuild test", "Click to open GitHub", url) {
+	case "terminal-notifier":
+		fmt.Println("waitbuild: notification sent via terminal-notifier; clicking it opens", url)
+	case "osascript":
+		fmt.Println("waitbuild: notification sent via AppleScript (not clickable)")
+		fmt.Println("waitbuild: install terminal-notifier (brew install terminal-notifier) and allow it in System Settings > Notifications to make notifications open GitHub")
+	default:
+		return errors.New("no notification tool found (terminal-notifier or osascript)")
+	}
+	return nil
+}
+
+// desktopNotify shows a macOS notification and returns the name of the tool
+// that delivered it, or "" if none did. With terminal-notifier installed
+// (brew install terminal-notifier) clicking the notification opens url;
+// otherwise it falls back to AppleScript, which cannot attach a click action.
+func desktopNotify(title, message, url string) string {
+	if tn, err := exec.LookPath("terminal-notifier"); err == nil {
+		args := []string{"-title", title, "-message", message, "-group", "waitbuild"}
+		if url != "" {
+			args = append(args, "-open", url)
+		}
+		if exec.Command(tn, args...).Run() == nil {
+			return "terminal-notifier"
+		}
+	}
 	if _, err := exec.LookPath("osascript"); err != nil {
-		return
+		return ""
 	}
 	script := fmt.Sprintf(`display notification %q with title %q`, message, title)
-	_ = exec.Command("osascript", "-e", script).Run()
+	if exec.Command("osascript", "-e", script).Run() != nil {
+		return ""
+	}
+	return "osascript"
 }

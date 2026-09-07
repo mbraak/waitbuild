@@ -621,5 +621,61 @@ func TestRun(t *testing.T) {
 
 func TestDesktopNotifyWithoutOsascript(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	desktopNotify("title", "message") // must be a silent no-op
+	if got := desktopNotify("title", "message", "https://example.com"); got != "" {
+		t.Fatalf("desktopNotify() = %q, want \"\" (silent no-op)", got)
+	}
+}
+
+func TestDesktopNotifyUsesTerminalNotifier(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake terminal-notifier script needs a POSIX shell")
+	}
+	bin := t.TempDir()
+	out := filepath.Join(bin, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "terminal-notifier"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	if used := desktopNotify("Build FAILED", "o/r @ abc", "https://github.com/o/r/actions/runs/1"); used != "terminal-notifier" {
+		t.Fatalf("desktopNotify() = %q, want %q", used, "terminal-notifier")
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("terminal-notifier was not invoked: %v", err)
+	}
+	want := "-title\nBuild FAILED\n-message\no/r @ abc\n-group\nwaitbuild\n-open\nhttps://github.com/o/r/actions/runs/1\n"
+	if string(got) != want {
+		t.Fatalf("terminal-notifier args:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// --- notifyURL -------------------------------------------------------------
+
+func TestNotifyURL(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	checks := "https://github.com/o/r/commit/" + sha + "/checks"
+	mk := func(conclusion, url string) *github.WorkflowRun {
+		return &github.WorkflowRun{Conclusion: github.Ptr(conclusion), HTMLURL: github.Ptr(url)}
+	}
+	tests := []struct {
+		name string
+		runs []*github.WorkflowRun
+		want string
+	}{
+		{"no runs", nil, checks},
+		{"all succeeded", []*github.WorkflowRun{mk("success", "u1"), mk("skipped", "u2")}, checks},
+		{"one failed", []*github.WorkflowRun{mk("success", "u1"), mk("failure", "u2")}, "u2"},
+		{"one failed without url", []*github.WorkflowRun{mk("failure", "")}, checks},
+		{"several failed", []*github.WorkflowRun{mk("failure", "u1"), mk("cancelled", "u2")}, checks},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := notifyURL("o", "r", sha, tt.runs); got != tt.want {
+				t.Fatalf("notifyURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

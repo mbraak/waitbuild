@@ -36,3 +36,7 @@ waitbuild -help           # all flags
 ```
 
 Exit code 0 when every run succeeded (or was skipped), 1 otherwise.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -69,7 +69,7 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	client, err := github.NewClient(github.WithAuthToken(token))
+	client, err := newGitHubClient(token)
 	if err != nil {
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
@@ -103,6 +103,11 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		return errors.New("one or more workflow runs did not succeed")
 	}
 	return nil
+}
+
+// newGitHubClient is a variable so tests can point the client at a fake server.
+var newGitHubClient = func(token string) (*github.Client, error) {
+	return github.NewClient(github.WithAuthToken(token))
 }
 
 // waitForRuns polls until at least one workflow run exists for sha and every

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -251,6 +252,7 @@ func done(id int64, name, conclusion string) *github.WorkflowRun {
 type fakeAPI struct {
 	mu       sync.Mutex
 	polls    [][]*github.WorkflowRun
+	pulls    []*github.PullRequest // served for .../commits/<sha>/pulls
 	requests []*http.Request
 	srv      *httptest.Server
 }
@@ -266,6 +268,12 @@ func newFakeAPI(t *testing.T, polls ...[]*github.WorkflowRun) *fakeAPI {
 func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if strings.HasSuffix(r.URL.Path, "/pulls") {
+		f.requests = append(f.requests, r)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(f.pulls)
+		return
+	}
 	if !strings.HasSuffix(r.URL.Path, "/actions/runs") {
 		http.NotFound(w, r)
 		return
@@ -621,5 +629,180 @@ func TestRun(t *testing.T) {
 
 func TestDesktopNotifyWithoutOsascript(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	desktopNotify("title", "message") // must be a silent no-op
+	if got := desktopNotify("title", "message", "https://example.com"); got != "" {
+		t.Fatalf("desktopNotify() = %q, want \"\" (silent no-op)", got)
+	}
+}
+
+func TestDesktopNotifyUsesTerminalNotifier(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake terminal-notifier script needs a POSIX shell")
+	}
+	bin := t.TempDir()
+	out := filepath.Join(bin, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "terminal-notifier"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	if used := desktopNotify("Build FAILED", "o/r @ abc", "https://github.com/o/r/actions/runs/1"); used != "terminal-notifier" {
+		t.Fatalf("desktopNotify() = %q, want %q", used, "terminal-notifier")
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("terminal-notifier was not invoked: %v", err)
+	}
+	want := "-title\nBuild FAILED\n-message\no/r @ abc\n-group\nwaitbuild\n-open\nhttps://github.com/o/r/actions/runs/1\n"
+	if string(got) != want {
+		t.Fatalf("terminal-notifier args:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// --- notifyURL -------------------------------------------------------------
+
+func TestNotifyURL(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	checks := "https://github.com/o/r/commit/" + sha + "/checks"
+	mk := func(conclusion, url string) *github.WorkflowRun {
+		return &github.WorkflowRun{Conclusion: github.Ptr(conclusion), HTMLURL: github.Ptr(url)}
+	}
+	tests := []struct {
+		name string
+		runs []*github.WorkflowRun
+		want string
+	}{
+		{"no runs", nil, checks},
+		{"all succeeded", []*github.WorkflowRun{mk("success", "u1"), mk("skipped", "u2")}, checks},
+		{"one failed", []*github.WorkflowRun{mk("success", "u1"), mk("failure", "u2")}, "u2"},
+		{"one failed without url", []*github.WorkflowRun{mk("failure", "")}, checks},
+		{"several failed", []*github.WorkflowRun{mk("failure", "u1"), mk("cancelled", "u2")}, checks},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := notifyURL("", "o", "r", sha, tt.runs); got != tt.want {
+				t.Fatalf("notifyURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	t.Run("pull request wins over failed run", func(t *testing.T) {
+		pr := "https://github.com/o/r/pull/7"
+		if got := notifyURL(pr, "o", "r", sha, []*github.WorkflowRun{mk("failure", "u1")}); got != pr {
+			t.Fatalf("notifyURL() = %q, want %q", got, pr)
+		}
+	})
+}
+
+// --- printPullRequest ------------------------------------------------------
+
+// captureStdout runs fn and returns what it wrote to os.Stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+	fn()
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func TestPrintPullRequest(t *testing.T) {
+	const remote = "https://github.com/mbraak/waitbuild.git"
+	t.Setenv("PATH", t.TempDir()) // no gh
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("GH_TOKEN", "")
+
+	t.Run("prints the pull request url", func(t *testing.T) {
+		dir, _, sha := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t)
+		f.pulls = []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr("https://github.com/mbraak/waitbuild/pull/3")}}
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		out := captureStdout(t, func() { err = printPullRequest("") })
+		if err != nil {
+			t.Fatalf("printPullRequest() = %v, want nil", err)
+		}
+		if out != "https://github.com/mbraak/waitbuild/pull/3\n" {
+			t.Fatalf("stdout = %q", out)
+		}
+		if want := "/repos/mbraak/waitbuild/commits/" + sha + "/pulls"; f.requests[0].URL.Path != want {
+			t.Fatalf("request path = %q, want %q", f.requests[0].URL.Path, want)
+		}
+	})
+
+	t.Run("fails when there is no pull request", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t)
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		out := captureStdout(t, func() { err = printPullRequest("") })
+		if err == nil || !strings.Contains(err.Error(), "no pull request found") {
+			t.Fatalf("printPullRequest() = %v, want no-pull-request error", err)
+		}
+		if out != "" {
+			t.Fatalf("stdout = %q, want empty", out)
+		}
+	})
+
+	t.Run("fails outside a repository", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := printPullRequest(""); err == nil || !strings.Contains(err.Error(), "opening git repository") {
+			t.Fatalf("printPullRequest() = %v, want repository error", err)
+		}
+	})
+}
+
+// --- pullRequestURL --------------------------------------------------------
+
+func TestPullRequestURL(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	mk := func(state, url string) *github.PullRequest {
+		return &github.PullRequest{State: github.Ptr(state), HTMLURL: github.Ptr(url)}
+	}
+	tests := []struct {
+		name  string
+		pulls []*github.PullRequest
+		want  string
+	}{
+		{"no pull requests", nil, ""},
+		{"one open", []*github.PullRequest{mk("open", "p1")}, "p1"},
+		{"prefers open over closed", []*github.PullRequest{mk("closed", "p1"), mk("open", "p2")}, "p2"},
+		{"only closed", []*github.PullRequest{mk("closed", "p1"), mk("closed", "p2")}, "p1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.pulls = tt.pulls
+			if got := pullRequestURL(context.Background(), f.client(t), "o", "r", sha); got != tt.want {
+				t.Fatalf("pullRequestURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	t.Run("lookup failure yields empty string", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+		base := srv.URL + "/"
+		c, err := github.NewClient(github.WithURLs(&base, &base))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pullRequestURL(context.Background(), c, "o", "r", sha); got != "" {
+			t.Fatalf("pullRequestURL() = %q, want \"\"", got)
+		}
+	})
 }

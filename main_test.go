@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -629,7 +630,7 @@ func TestRun(t *testing.T) {
 
 func TestDesktopNotifyWithoutOsascript(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if got := desktopNotify("title", "message", "https://example.com"); got != "" {
+	if got := desktopNotify("title", "message", "https://example.com", ""); got != "" {
 		t.Fatalf("desktopNotify() = %q, want \"\" (silent no-op)", got)
 	}
 }
@@ -646,7 +647,7 @@ func TestDesktopNotifyUsesTerminalNotifier(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	if used := desktopNotify("Build FAILED", "o/r @ abc", "https://github.com/o/r/actions/runs/1"); used != "terminal-notifier" {
+	if used := desktopNotify("Build FAILED", "o/r @ abc", "https://github.com/o/r/actions/runs/1", "/icons/failure.png"); used != "terminal-notifier" {
 		t.Fatalf("desktopNotify() = %q, want %q", used, "terminal-notifier")
 	}
 
@@ -654,9 +655,68 @@ func TestDesktopNotifyUsesTerminalNotifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("terminal-notifier was not invoked: %v", err)
 	}
-	want := "-title\nBuild FAILED\n-message\no/r @ abc\n-group\nwaitbuild\n-open\nhttps://github.com/o/r/actions/runs/1\n"
+	want := "-title\nBuild FAILED\n-message\no/r @ abc\n-group\nwaitbuild\n-open\nhttps://github.com/o/r/actions/runs/1\n-contentImage\n/icons/failure.png\n"
 	if string(got) != want {
 		t.Fatalf("terminal-notifier args:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// --- iconFile / drawIcon ---------------------------------------------------
+
+func TestIconFileWritesDistinctCachedIcons(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache) // linux
+	t.Setenv("HOME", cache)           // darwin uses $HOME/Library/Caches
+	t.Setenv("LocalAppData", cache)   // windows
+
+	success, failure := iconFile(true), iconFile(false)
+	if success == "" || failure == "" {
+		t.Fatalf("iconFile() = %q, %q, want two paths", success, failure)
+	}
+	if success == failure {
+		t.Fatalf("iconFile(true) and iconFile(false) both returned %q", success)
+	}
+	for _, p := range []string{success, failure} {
+		if !strings.HasPrefix(p, cache) {
+			t.Errorf("icon %q not under cache dir %q", p, cache)
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := png.DecodeConfig(f)
+		f.Close()
+		if err != nil {
+			t.Fatalf("%s: not a PNG: %v", p, err)
+		}
+		if cfg.Width != 128 || cfg.Height != 128 {
+			t.Errorf("%s: size %dx%d, want 128x128", p, cfg.Width, cfg.Height)
+		}
+	}
+	if again := iconFile(true); again != success {
+		t.Fatalf("second iconFile(true) = %q, want cached %q", again, success)
+	}
+}
+
+func TestDrawIconColors(t *testing.T) {
+	ok, fail := drawIcon(true), drawIcon(false)
+	// The filled disc shows the status colour off-centre, away from the mark.
+	if c := ok.RGBAAt(20, 64); c.G < 0x90 || c.R > 0x60 {
+		t.Errorf("success icon fill = %v, want green", c)
+	}
+	if c := fail.RGBAAt(20, 64); c.R < 0xa0 || c.G > 0x60 {
+		t.Errorf("failure icon fill = %v, want red", c)
+	}
+	// The mark is white where both icons have a stroke.
+	if c := fail.RGBAAt(64, 64); c.R != 0xff || c.G != 0xff || c.B != 0xff {
+		t.Errorf("failure icon centre = %v, want white cross", c)
+	}
+	if c := ok.RGBAAt(56, 86); c.R != 0xff || c.G != 0xff || c.B != 0xff {
+		t.Errorf("success icon check corner = %v, want white check mark", c)
+	}
+	// Corners lie outside the disc and are transparent.
+	if c := ok.RGBAAt(0, 0); c.A != 0 {
+		t.Errorf("corner = %v, want transparent", c)
 	}
 }
 

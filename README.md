@@ -18,10 +18,12 @@ cd ~/waitbuild && go build -o ~/.local/bin/waitbuild .
 ```
 
 Optionally install [terminal-notifier](https://github.com/julienXX/terminal-notifier)
-so that clicking the notification opens GitHub: the commit's pull request when
-it has one, otherwise the failed run when exactly one failed, otherwise the
-commit's checks page. Without it the notification is shown via AppleScript and
-is not clickable.
+so that the notification shows a green check mark or a red cross for the build
+result, and clicking it opens GitHub: the commit's pull request when it has
+one, otherwise the failed run when exactly one failed, otherwise the commit's
+checks page. The icons are rendered once into `~/Library/Caches/waitbuild`.
+Without terminal-notifier the notification is shown via AppleScript, without an
+icon and not clickable.
 
 ```sh
 brew install terminal-notifier

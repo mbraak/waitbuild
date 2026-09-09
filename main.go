@@ -16,8 +16,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -117,7 +122,7 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 			title = fmt.Sprintf("Build of %s FAILED", branch)
 		}
 		url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, runs)
-		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url)
+		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(ok))
 	}
 	if !ok {
 		return errors.New("one or more workflow runs did not succeed")
@@ -338,7 +343,7 @@ func notifyURL(prURL, owner, repo, sha string, runs []*github.WorkflowRun) strin
 // reports which tool delivered it, so the setup can be checked without a push.
 func testNotification() error {
 	url := "https://github.com/mbraak/waitbuild"
-	switch desktopNotify("waitbuild test", "Click to open GitHub", url) {
+	switch desktopNotify("waitbuild test", "Click to open GitHub", url, iconFile(true)) {
 	case "terminal-notifier":
 		fmt.Println("waitbuild: notification sent via terminal-notifier; clicking it opens", url)
 	case "osascript":
@@ -352,13 +357,17 @@ func testNotification() error {
 
 // desktopNotify shows a macOS notification and returns the name of the tool
 // that delivered it, or "" if none did. With terminal-notifier installed
-// (brew install terminal-notifier) clicking the notification opens url;
-// otherwise it falls back to AppleScript, which cannot attach a click action.
-func desktopNotify(title, message, url string) string {
+// (brew install terminal-notifier) clicking the notification opens url and
+// icon (a PNG path, may be "") is shown next to the text; otherwise it falls
+// back to AppleScript, which cannot attach a click action or an image.
+func desktopNotify(title, message, url, icon string) string {
 	if tn, err := exec.LookPath("terminal-notifier"); err == nil {
 		args := []string{"-title", title, "-message", message, "-group", "waitbuild"}
 		if url != "" {
 			args = append(args, "-open", url)
+		}
+		if icon != "" {
+			args = append(args, "-contentImage", icon)
 		}
 		if exec.Command(tn, args...).Run() == nil {
 			return "terminal-notifier"
@@ -372,4 +381,96 @@ func desktopNotify(title, message, url string) string {
 		return ""
 	}
 	return "osascript"
+}
+
+// iconFile returns the path of the notification icon for a successful (green
+// check mark) or failed (red cross) build, rendering it into the user's cache
+// directory the first time. It returns "" when the icon cannot be written, in
+// which case the notification is shown without an image.
+func iconFile(ok bool) string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	name := "failure.png"
+	if ok {
+		name = "success.png"
+	}
+	path := filepath.Join(dir, "waitbuild", name)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return ""
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return ""
+	}
+	if err := png.Encode(f, drawIcon(ok)); err != nil {
+		f.Close()
+		os.Remove(path)
+		return ""
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return ""
+	}
+	return path
+}
+
+// drawIcon renders a filled circle, green with a white check mark for ok and
+// red with a white cross otherwise.
+func drawIcon(ok bool) *image.RGBA {
+	const size = 128
+	fill := color.RGBA{0xcf, 0x22, 0x2e, 0xff} // red
+	var strokes [][4]float64
+	if ok {
+		fill = color.RGBA{0x2d, 0xa4, 0x4e, 0xff} // green
+		strokes = [][4]float64{{34, 66, 56, 88}, {56, 88, 96, 44}}
+	} else {
+		strokes = [][4]float64{{42, 42, 86, 86}, {86, 42, 42, 86}}
+	}
+	const (
+		center = size / 2.0
+		radius = size/2.0 - 2
+		stroke = 7.0 // half the line width
+	)
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			px, py := float64(x)+0.5, float64(y)+0.5
+			// Coverage 0..1 with a one-pixel soft edge, for anti-aliasing.
+			cover := func(d float64) float64 { return math.Max(0, math.Min(1, 0.5-d)) }
+			disc := cover(math.Hypot(px-center, py-center) - radius)
+			if disc == 0 {
+				continue
+			}
+			mark := 0.0
+			for _, s := range strokes {
+				mark = math.Max(mark, cover(distToSegment(px, py, s)-stroke))
+			}
+			c := blend(fill, color.RGBA{0xff, 0xff, 0xff, 0xff}, mark)
+			c.A = uint8(math.Round(disc * 255))
+			c.R = uint8(math.Round(float64(c.R) * disc))
+			c.G = uint8(math.Round(float64(c.G) * disc))
+			c.B = uint8(math.Round(float64(c.B) * disc))
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
+}
+
+// distToSegment returns the distance from (px, py) to the segment s = {x1, y1, x2, y2}.
+func distToSegment(px, py float64, s [4]float64) float64 {
+	dx, dy := s[2]-s[0], s[3]-s[1]
+	t := ((px-s[0])*dx + (py-s[1])*dy) / (dx*dx + dy*dy)
+	t = math.Max(0, math.Min(1, t))
+	return math.Hypot(px-(s[0]+t*dx), py-(s[1]+t*dy))
+}
+
+// blend mixes a and b, with t = 0 giving a and t = 1 giving b.
+func blend(a, b color.RGBA, t float64) color.RGBA {
+	mix := func(x, y uint8) uint8 { return uint8(math.Round(float64(x)*(1-t) + float64(y)*t)) }
+	return color.RGBA{mix(a.R, b.R), mix(a.G, b.G), mix(a.B, b.B), 0xff}
 }

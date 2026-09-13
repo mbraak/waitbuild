@@ -98,6 +98,9 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
 
+	if err := checkHasWorkflows(ctx, client, owner, repo); err != nil {
+		return err
+	}
 	fmt.Printf("waitbuild: waiting for the build of %s (%s) in %s/%s\n", branch, sha[:min(10, len(sha))], owner, repo)
 
 	runs, err := waitForRuns(ctx, client, owner, repo, sha, interval, appearTimeout)
@@ -133,6 +136,20 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 // newGitHubClient is a variable so tests can point the client at a fake server.
 var newGitHubClient = func(token string) (*github.Client, error) {
 	return github.NewClient(github.WithAuthToken(token))
+}
+
+// checkHasWorkflows fails when the repository has no GitHub Actions workflows
+// at all, so that waiting for a run that can never appear is reported at once
+// instead of after the appear timeout.
+func checkHasWorkflows(ctx context.Context, client *github.Client, owner, repo string) error {
+	wfs, _, err := client.Actions.ListWorkflows(ctx, owner, repo, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		return fmt.Errorf("listing workflows: %w", err)
+	}
+	if wfs.GetTotalCount() == 0 {
+		return fmt.Errorf("%s/%s has no GitHub Actions workflows, so there is no build to wait for", owner, repo)
+	}
+	return nil
 }
 
 // waitForRuns polls until at least one workflow run exists for sha and every

@@ -251,11 +251,12 @@ func done(id int64, name, conclusion string) *github.WorkflowRun {
 // answered with the next entry of polls; once exhausted the last entry is
 // repeated. A nil handler entry answers with HTTP 500.
 type fakeAPI struct {
-	mu       sync.Mutex
-	polls    [][]*github.WorkflowRun
-	pulls    []*github.PullRequest // served for .../commits/<sha>/pulls
-	requests []*http.Request
-	srv      *httptest.Server
+	mu          sync.Mutex
+	polls       [][]*github.WorkflowRun
+	pulls       []*github.PullRequest // served for .../commits/<sha>/pulls
+	noWorkflows bool                  // answer .../actions/workflows with an empty list
+	requests    []*http.Request
+	srv         *httptest.Server
 }
 
 func newFakeAPI(t *testing.T, polls ...[]*github.WorkflowRun) *fakeAPI {
@@ -273,6 +274,15 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.requests = append(f.requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(f.pulls)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/actions/workflows") {
+		count := 1
+		if f.noWorkflows {
+			count = 0
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(github.Workflows{TotalCount: github.Ptr(count)})
 		return
 	}
 	if !strings.HasSuffix(r.URL.Path, "/actions/runs") {
@@ -538,6 +548,22 @@ func TestRun(t *testing.T) {
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer tok" {
 			t.Errorf("Authorization = %q, want Bearer tok", got)
+		}
+	})
+
+	t.Run("repository without workflows fails immediately", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, []*github.WorkflowRun{})
+		f.noWorkflows = true
+		useFakeAPI(t, f, "tok")
+
+		err := run("", "", interval, time.Hour, time.Minute, false)
+		if err == nil || !strings.Contains(err.Error(), "has no GitHub Actions workflows") {
+			t.Fatalf("run() = %v, want no-workflows error", err)
+		}
+		if n := f.requestCount(); n != 0 {
+			t.Errorf("polled runs %d times, want 0", n)
 		}
 	})
 

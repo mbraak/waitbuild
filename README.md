@@ -1,15 +1,18 @@
 # waitbuild
 
-Waits until all GitHub Actions workflow runs for a commit have finished and
-prints their conclusions. Built on [go-github](https://github.com/google/go-github).
+Waits until every check GitHub reports for a commit has finished and prints
+the results. It covers GitHub Actions workflow runs, check runs from other
+GitHub Apps (SonarCloud, Aikido, ...) and commit statuses from services such
+as CircleCI (`ci/circleci: <job>`). Built on
+[go-github](https://github.com/google/go-github).
 
 ## Run on `git push`
 
 Git has no post-push hook, so a repository's pre-push hook (for example
 `tree-element/.githooks/pre-push`) starts waitbuild in the background for each
 pushed branch. The push is not delayed;
-waitbuild waits for the workflow runs of the pushed commit to appear, then
-prints a per-workflow status to the terminal and shows a macOS notification.
+waitbuild waits for the checks of the pushed commit to appear, then
+prints a per-check status to the terminal and shows a macOS notification.
 
 Install the binary once, somewhere on your PATH:
 
@@ -52,7 +55,12 @@ waitbuild -help           # all flags
 `-pr` prints the pull request that contains the commit (an open one when there
 are several) and exits with 1 when there is none.
 
-Exit code 0 when every run succeeded (or was skipped), 1 otherwise.
+Exit code 0 when every check succeeded (or was skipped), 1 otherwise. A commit
+status in state `failure` or `error` counts as a failed check.
+
+A repository without GitHub Actions workflows is fine: waitbuild then waits for
+commit statuses and check runs only. When nothing at all is reported within
+`-appear-timeout` (3 minutes by default) it gives up.
 
 ## License
 

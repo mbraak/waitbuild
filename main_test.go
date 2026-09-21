@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -247,21 +248,57 @@ func done(id int64, name, conclusion string) *github.WorkflowRun {
 	return mkRun(id, name, "completed", conclusion)
 }
 
-// fakeAPI serves GET /repos/{owner}/{repo}/actions/runs. Each request is
-// answered with the next entry of polls; once exhausted the last entry is
-// repeated. A nil handler entry answers with HTTP 500.
+// mkCheckRun builds a check run created by the GitHub App with slug app.
+func mkCheckRun(id int64, name, app, status, conclusion string) *github.CheckRun {
+	r := &github.CheckRun{
+		ID:      github.Ptr(id),
+		Name:    github.Ptr(name),
+		Status:  github.Ptr(status),
+		HTMLURL: github.Ptr(fmt.Sprintf("https://github.com/o/r/runs/%d", id)),
+		App:     &github.App{Slug: github.Ptr(app)},
+	}
+	if conclusion != "" {
+		r.Conclusion = github.Ptr(conclusion)
+	}
+	return r
+}
+
+// mkStatus builds a commit status such as CircleCI reports them.
+func mkStatus(context, state string) *github.RepoStatus {
+	return &github.RepoStatus{
+		Context:   github.Ptr(context),
+		State:     github.Ptr(state),
+		TargetURL: github.Ptr("https://circleci.com/gh/o/r/" + strings.ReplaceAll(context, " ", "")),
+	}
+}
+
+// poll is what the fake API reports for one polling round: the workflow runs,
+// check runs and commit statuses of the commit.
+type poll struct {
+	runs      []*github.WorkflowRun
+	checkRuns []*github.CheckRun
+	statuses  []*github.RepoStatus
+}
+
+func runsOnly(runs ...*github.WorkflowRun) *poll { return &poll{runs: runs} }
+
+// fakeAPI serves the endpoints waitbuild uses. The three per-commit listing
+// endpoints (workflow runs, check runs, combined status) each answer their
+// n-th request with polls[n]; once exhausted the last entry is repeated. A nil
+// entry answers with HTTP 500.
 type fakeAPI struct {
 	mu          sync.Mutex
-	polls       [][]*github.WorkflowRun
+	polls       []*poll
 	pulls       []*github.PullRequest // served for .../commits/<sha>/pulls
 	noWorkflows bool                  // answer .../actions/workflows with an empty list
 	requests    []*http.Request
+	served      map[string]int // listing endpoint suffix -> requests answered
 	srv         *httptest.Server
 }
 
-func newFakeAPI(t *testing.T, polls ...[]*github.WorkflowRun) *fakeAPI {
+func newFakeAPI(t *testing.T, polls ...*poll) *fakeAPI {
 	t.Helper()
-	f := &fakeAPI{polls: polls}
+	f := &fakeAPI{polls: polls, served: map[string]int{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -270,52 +307,82 @@ func newFakeAPI(t *testing.T, polls ...[]*github.WorkflowRun) *fakeAPI {
 func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if strings.HasSuffix(r.URL.Path, "/pulls") {
-		f.requests = append(f.requests, r)
-		w.Header().Set("Content-Type", "application/json")
+	f.requests = append(f.requests, r)
+	w.Header().Set("Content-Type", "application/json")
+
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/pulls"):
 		_ = json.NewEncoder(w).Encode(f.pulls)
-		return
-	}
-	if strings.HasSuffix(r.URL.Path, "/actions/workflows") {
+	case strings.HasSuffix(r.URL.Path, "/actions/workflows"):
 		count := 1
 		if f.noWorkflows {
 			count = 0
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(github.Workflows{TotalCount: github.Ptr(count)})
-		return
-	}
-	if !strings.HasSuffix(r.URL.Path, "/actions/runs") {
+	case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+		if p := f.poll("/actions/runs"); p == nil {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		} else {
+			_ = json.NewEncoder(w).Encode(github.WorkflowRuns{TotalCount: github.Ptr(len(p.runs)), WorkflowRuns: p.runs})
+		}
+	case strings.HasSuffix(r.URL.Path, "/check-runs"):
+		if p := f.poll("/check-runs"); p == nil {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		} else {
+			_ = json.NewEncoder(w).Encode(github.ListCheckRunsResults{Total: github.Ptr(len(p.checkRuns)), CheckRuns: p.checkRuns})
+		}
+	case strings.HasSuffix(r.URL.Path, "/status"):
+		if p := f.poll("/status"); p == nil {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		} else {
+			_ = json.NewEncoder(w).Encode(github.CombinedStatus{TotalCount: github.Ptr(len(p.statuses)), Statuses: p.statuses})
+		}
+	default:
 		http.NotFound(w, r)
-		return
 	}
-	i := len(f.requests)
-	f.requests = append(f.requests, r)
+}
+
+// poll returns the entry for the next request to endpoint, or nil for an error.
+func (f *fakeAPI) poll(endpoint string) *poll {
+	i := f.served[endpoint]
+	f.served[endpoint]++
+	if len(f.polls) == 0 {
+		return nil
+	}
 	if i >= len(f.polls) {
 		i = len(f.polls) - 1
 	}
-	runs := f.polls[i]
-	if runs == nil {
-		http.Error(w, "boom", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(github.WorkflowRuns{
-		TotalCount:   github.Ptr(len(runs)),
-		WorkflowRuns: runs,
-	})
+	return f.polls[i]
 }
 
-func (f *fakeAPI) requestCount() int {
+// pollCount returns how many polling rounds were served.
+func (f *fakeAPI) pollCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.requests)
+	return f.served["/actions/runs"]
+}
+
+// request returns the first request whose path ends in suffix, or nil.
+func (f *fakeAPI) request(suffix string) *http.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.requests {
+		if strings.HasSuffix(r.URL.Path, suffix) {
+			return r
+		}
+	}
+	return nil
 }
 
 // client returns a go-github client that talks to the fake server.
 func (f *fakeAPI) client(t *testing.T) *github.Client {
 	t.Helper()
-	base := f.srv.URL + "/"
+	return clientFor(t, f.srv)
+}
+
+func clientFor(t *testing.T, srv *httptest.Server) *github.Client {
+	t.Helper()
+	base := srv.URL + "/"
 	c, err := github.NewClient(github.WithURLs(&base, &base))
 	if err != nil {
 		t.Fatal(err)
@@ -323,10 +390,35 @@ func (f *fakeAPI) client(t *testing.T) *github.Client {
 	return c
 }
 
-func names(runs []*github.WorkflowRun) []string {
+// pagedServer serves a two-page listing at any path: page 1 (also the
+// unnumbered first request) with a Link header pointing at page 2. It
+// records the page numbers requested.
+func pagedServer(t *testing.T, page1, page2 any) (*httptest.Server, *[]string) {
+	t.Helper()
+	var srv *httptest.Server
+	pages := &[]string{}
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		*pages = append(*pages, page)
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "", "1":
+			w.Header().Set("Link", fmt.Sprintf(`<%s%s?page=2&per_page=100>; rel="next", <%s%s?page=2&per_page=100>; rel="last"`, srv.URL, r.URL.Path, srv.URL, r.URL.Path))
+			_ = json.NewEncoder(w).Encode(page1)
+		case "2":
+			_ = json.NewEncoder(w).Encode(page2)
+		default:
+			t.Errorf("unexpected page %q", page)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, pages
+}
+
+func names(checks []check) []string {
 	var out []string
-	for _, r := range runs {
-		out = append(out, r.GetName())
+	for _, c := range checks {
+		out = append(out, c.name)
 	}
 	return out
 }
@@ -346,20 +438,20 @@ func equalStrings(a, b []string) bool {
 // --- listRuns --------------------------------------------------------------
 
 func TestListRuns(t *testing.T) {
-	t.Run("filters by sha and sorts by name", func(t *testing.T) {
-		f := newFakeAPI(t, []*github.WorkflowRun{
-			done(2, "lint", "success"),
-			done(1, "build", "success"),
-			done(3, "Deploy", "success"),
-		})
+	t.Run("filters by sha and maps runs to checks", func(t *testing.T) {
+		f := newFakeAPI(t, runsOnly(done(2, "lint", "success"), mkRun(1, "build", "in_progress", "")))
 		runs, err := listRuns(context.Background(), f.client(t), "o", "r", "abc123")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := names(runs), []string{"Deploy", "build", "lint"}; !equalStrings(got, want) {
-			t.Errorf("names = %v, want %v", got, want)
+		want := []check{
+			{key: "run:2", name: "lint", status: "completed", conclusion: "success", url: "https://github.com/o/r/actions/runs/2"},
+			{key: "run:1", name: "build", status: "in_progress", url: "https://github.com/o/r/actions/runs/1"},
 		}
-		req := f.requests[0]
+		if !reflect.DeepEqual(runs, want) {
+			t.Errorf("listRuns() = %+v, want %+v", runs, want)
+		}
+		req := f.request("/actions/runs")
 		if req.URL.Path != "/repos/o/r/actions/runs" {
 			t.Errorf("path = %s", req.URL.Path)
 		}
@@ -372,38 +464,18 @@ func TestListRuns(t *testing.T) {
 	})
 
 	t.Run("follows pagination", func(t *testing.T) {
-		var srv *httptest.Server
-		var pages []string
-		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			page := r.URL.Query().Get("page")
-			pages = append(pages, page)
-			var runs []*github.WorkflowRun
-			switch page {
-			case "", "1":
-				runs = []*github.WorkflowRun{done(1, "b", "success")}
-				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/actions/runs?page=2&per_page=100>; rel="next", <%s/repos/o/r/actions/runs?page=2&per_page=100>; rel="last"`, srv.URL, srv.URL))
-			case "2":
-				runs = []*github.WorkflowRun{done(2, "a", "success")}
-			default:
-				t.Errorf("unexpected page %q", page)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(github.WorkflowRuns{WorkflowRuns: runs})
-		}))
-		defer srv.Close()
-		base := srv.URL + "/"
-		c, err := github.NewClient(github.WithURLs(&base, &base))
+		srv, pages := pagedServer(t,
+			github.WorkflowRuns{WorkflowRuns: []*github.WorkflowRun{done(1, "b", "success")}},
+			github.WorkflowRuns{WorkflowRuns: []*github.WorkflowRun{done(2, "a", "success")}},
+		)
+		runs, err := listRuns(context.Background(), clientFor(t, srv), "o", "r", "sha")
 		if err != nil {
 			t.Fatal(err)
 		}
-		runs, err := listRuns(context.Background(), c, "o", "r", "sha")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got, want := names(runs), []string{"a", "b"}; !equalStrings(got, want) {
+		if got, want := names(runs), []string{"b", "a"}; !equalStrings(got, want) {
 			t.Errorf("names = %v, want %v", got, want)
 		}
-		if got, want := pages, []string{"", "2"}; !equalStrings(got, want) {
+		if got, want := *pages, []string{"", "2"}; !equalStrings(got, want) {
 			t.Errorf("pages requested = %q, want %q", got, want)
 		}
 	})
@@ -417,89 +489,305 @@ func TestListRuns(t *testing.T) {
 	})
 }
 
-// --- waitForRuns -----------------------------------------------------------
+// --- listCheckRuns ---------------------------------------------------------
 
-func TestWaitForRuns(t *testing.T) {
-	const interval = time.Millisecond
-	const appear = time.Minute
-
-	t.Run("waits for runs to appear and complete, settling twice", func(t *testing.T) {
-		f := newFakeAPI(t,
-			nil, // placeholder replaced below: empty first poll
-			[]*github.WorkflowRun{mkRun(1, "build", "in_progress", "")},
-			[]*github.WorkflowRun{done(1, "build", "success"), mkRun(2, "lint", "queued", "")},
-			[]*github.WorkflowRun{done(1, "build", "success"), done(2, "lint", "success")},
-			[]*github.WorkflowRun{done(1, "build", "success"), done(2, "lint", "success")},
-		)
-		f.polls[0] = []*github.WorkflowRun{} // empty, not an error
-
-		runs, err := waitForRuns(context.Background(), f.client(t), "o", "r", "sha", interval, appear)
+func TestListCheckRuns(t *testing.T) {
+	t.Run("maps check runs and skips GitHub Actions jobs", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{checkRuns: []*github.CheckRun{
+			mkCheckRun(10, "SonarCloud Code Analysis", "sonarqubecloud", "completed", "success"),
+			mkCheckRun(11, "danger", "github-actions", "completed", "success"),
+			mkCheckRun(12, "Aikido Security: check code", "aikido-pr-checks", "in_progress", ""),
+		}})
+		got, err := listCheckRuns(context.Background(), f.client(t), "o", "r", "abc123")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := names(runs), []string{"build", "lint"}; !equalStrings(got, want) {
+		want := []check{
+			{key: "check:10", name: "SonarCloud Code Analysis", status: "completed", conclusion: "success", url: "https://github.com/o/r/runs/10"},
+			{key: "check:12", name: "Aikido Security: check code", status: "in_progress", url: "https://github.com/o/r/runs/12"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("listCheckRuns() = %+v, want %+v", got, want)
+		}
+		req := f.request("/check-runs")
+		if req.URL.Path != "/repos/o/r/commits/abc123/check-runs" {
+			t.Errorf("path = %s", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("per_page = %q, want 100", got)
+		}
+	})
+
+	t.Run("follows pagination", func(t *testing.T) {
+		srv, pages := pagedServer(t,
+			github.ListCheckRunsResults{CheckRuns: []*github.CheckRun{mkCheckRun(1, "b", "sonar", "completed", "success")}},
+			github.ListCheckRunsResults{CheckRuns: []*github.CheckRun{mkCheckRun(2, "a", "sonar", "completed", "success")}},
+		)
+		got, err := listCheckRuns(context.Background(), clientFor(t, srv), "o", "r", "sha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(got), []string{"b", "a"}; !equalStrings(got, want) {
 			t.Errorf("names = %v, want %v", got, want)
 		}
-		if n := f.requestCount(); n != 5 {
+		if got, want := *pages, []string{"", "2"}; !equalStrings(got, want) {
+			t.Errorf("pages requested = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("api error", func(t *testing.T) {
+		f := newFakeAPI(t, nil)
+		_, err := listCheckRuns(context.Background(), f.client(t), "o", "r", "sha")
+		if err == nil || !strings.Contains(err.Error(), "listing check runs") {
+			t.Fatalf("listCheckRuns() error = %v, want listing error", err)
+		}
+	})
+}
+
+// --- listStatuses ----------------------------------------------------------
+
+func TestListStatuses(t *testing.T) {
+	t.Run("maps commit statuses to checks keyed by context", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{
+			mkStatus("ci/circleci: lint", "success"),
+			mkStatus("ci/circleci: test", "pending"),
+			mkStatus("ci/circleci: build", "failure"),
+			mkStatus("ci/circleci: deploy", "error"),
+		}})
+		got, err := listStatuses(context.Background(), f.client(t), "o", "r", "abc123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []check{
+			{key: "status:ci/circleci: lint", name: "ci/circleci: lint", status: "completed", conclusion: "success", url: "https://circleci.com/gh/o/r/ci/circleci:lint"},
+			{key: "status:ci/circleci: test", name: "ci/circleci: test", status: "pending", url: "https://circleci.com/gh/o/r/ci/circleci:test"},
+			{key: "status:ci/circleci: build", name: "ci/circleci: build", status: "completed", conclusion: "failure", url: "https://circleci.com/gh/o/r/ci/circleci:build"},
+			{key: "status:ci/circleci: deploy", name: "ci/circleci: deploy", status: "completed", conclusion: "error", url: "https://circleci.com/gh/o/r/ci/circleci:deploy"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("listStatuses() = %+v, want %+v", got, want)
+		}
+		for _, c := range got[2:] {
+			if c.ok() {
+				t.Errorf("%s with conclusion %q counts as ok, want failure", c.name, c.conclusion)
+			}
+		}
+		req := f.request("/status")
+		if req.URL.Path != "/repos/o/r/commits/abc123/status" {
+			t.Errorf("path = %s", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("per_page = %q, want 100", got)
+		}
+	})
+
+	t.Run("follows pagination", func(t *testing.T) {
+		srv, pages := pagedServer(t,
+			github.CombinedStatus{Statuses: []*github.RepoStatus{mkStatus("b", "success")}},
+			github.CombinedStatus{Statuses: []*github.RepoStatus{mkStatus("a", "success")}},
+		)
+		got, err := listStatuses(context.Background(), clientFor(t, srv), "o", "r", "sha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(got), []string{"b", "a"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
+		}
+		if got, want := *pages, []string{"", "2"}; !equalStrings(got, want) {
+			t.Errorf("pages requested = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("api error", func(t *testing.T) {
+		f := newFakeAPI(t, nil)
+		_, err := listStatuses(context.Background(), f.client(t), "o", "r", "sha")
+		if err == nil || !strings.Contains(err.Error(), "listing commit statuses") {
+			t.Fatalf("listStatuses() error = %v, want listing error", err)
+		}
+	})
+}
+
+// --- listChecks ------------------------------------------------------------
+
+func TestListChecks(t *testing.T) {
+	t.Run("merges all sources sorted by name", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{
+			runs:      []*github.WorkflowRun{done(1, "danger", "success")},
+			checkRuns: []*github.CheckRun{mkCheckRun(2, "SonarCloud", "sonarqubecloud", "completed", "success"), mkCheckRun(3, "danger", "github-actions", "completed", "success")},
+			statuses:  []*github.RepoStatus{mkStatus("ci/circleci: lint", "pending"), mkStatus("ci/circleci: build", "success")},
+		})
+		got, err := listChecks(context.Background(), f.client(t), "o", "r", "sha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"SonarCloud", "ci/circleci: build", "ci/circleci: lint", "danger"}
+		if !equalStrings(names(got), want) {
+			t.Errorf("names = %v, want %v", names(got), want)
+		}
+	})
+
+	t.Run("fails when any source fails", func(t *testing.T) {
+		f := newFakeAPI(t, nil)
+		_, err := listChecks(context.Background(), f.client(t), "o", "r", "sha")
+		if err == nil {
+			t.Fatal("listChecks() = nil, want error")
+		}
+	})
+}
+
+// --- waitForChecks ---------------------------------------------------------
+
+func TestWaitForChecks(t *testing.T) {
+	const interval = time.Millisecond
+	const appear = time.Minute
+	wait := func(f *fakeAPI, ctx context.Context, appear time.Duration) ([]check, error) {
+		return waitForChecks(ctx, f.client(t), "o", "r", "sha", interval, appear, true)
+	}
+
+	t.Run("waits for runs to appear and complete, settling twice", func(t *testing.T) {
+		f := newFakeAPI(t,
+			&poll{}, // nothing reported yet
+			runsOnly(mkRun(1, "build", "in_progress", "")),
+			runsOnly(done(1, "build", "success"), mkRun(2, "lint", "queued", "")),
+			runsOnly(done(1, "build", "success"), done(2, "lint", "success")),
+			runsOnly(done(1, "build", "success"), done(2, "lint", "success")),
+		)
+		checks, err := wait(f, context.Background(), appear)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(checks), []string{"build", "lint"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
+		}
+		if n := f.pollCount(); n != 5 {
 			t.Errorf("polled %d times, want 5 (empty, running, partial, done, done again)", n)
 		}
 	})
 
 	t.Run("a late run resets the settle counter", func(t *testing.T) {
 		f := newFakeAPI(t,
-			[]*github.WorkflowRun{done(1, "build", "success")},
-			[]*github.WorkflowRun{done(1, "build", "success"), mkRun(2, "lint", "in_progress", "")},
-			[]*github.WorkflowRun{done(1, "build", "success"), done(2, "lint", "failure")},
-			[]*github.WorkflowRun{done(1, "build", "success"), done(2, "lint", "failure")},
+			runsOnly(done(1, "build", "success")),
+			runsOnly(done(1, "build", "success"), mkRun(2, "lint", "in_progress", "")),
+			runsOnly(done(1, "build", "success"), done(2, "lint", "failure")),
+			runsOnly(done(1, "build", "success"), done(2, "lint", "failure")),
 		)
-		runs, err := waitForRuns(context.Background(), f.client(t), "o", "r", "sha", interval, appear)
+		checks, err := wait(f, context.Background(), appear)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(runs) != 2 {
-			t.Fatalf("got %d runs, want 2 (late run must be included): %v", len(runs), names(runs))
+		if len(checks) != 2 {
+			t.Fatalf("got %d checks, want 2 (late run must be included): %v", len(checks), names(checks))
 		}
-		if runs[1].GetConclusion() != "failure" {
-			t.Errorf("lint conclusion = %q, want failure", runs[1].GetConclusion())
+		if checks[1].conclusion != "failure" {
+			t.Errorf("lint conclusion = %q, want failure", checks[1].conclusion)
 		}
-		if n := f.requestCount(); n != 4 {
+		if n := f.pollCount(); n != 4 {
 			t.Errorf("polled %d times, want 4", n)
 		}
 	})
 
-	t.Run("gives up when no run appears", func(t *testing.T) {
-		f := newFakeAPI(t, []*github.WorkflowRun{})
-		_, err := waitForRuns(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond)
+	t.Run("keeps waiting while CircleCI statuses are pending", func(t *testing.T) {
+		actionsDone := []*github.WorkflowRun{done(1, "danger", "success")}
+		f := newFakeAPI(t,
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "pending"), mkStatus("ci/circleci: test", "pending")}},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success"), mkStatus("ci/circleci: test", "pending")}},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success"), mkStatus("ci/circleci: test", "failure")}},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success"), mkStatus("ci/circleci: test", "failure")}},
+		)
+		checks, err := wait(f, context.Background(), appear)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(checks), []string{"ci/circleci: lint", "ci/circleci: test", "danger"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
+		}
+		if checks[1].conclusion != "failure" {
+			t.Errorf("test conclusion = %q, want failure", checks[1].conclusion)
+		}
+		if n := f.pollCount(); n != 4 {
+			t.Errorf("polled %d times, want 4", n)
+		}
+	})
+
+	t.Run("a status registering after Actions finished resets the settle counter", func(t *testing.T) {
+		actionsDone := []*github.WorkflowRun{done(1, "danger", "success")}
+		f := newFakeAPI(t,
+			&poll{runs: actionsDone},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "pending")}},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success")}},
+			&poll{runs: actionsDone, statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success")}},
+		)
+		checks, err := wait(f, context.Background(), appear)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(checks) != 2 {
+			t.Fatalf("got %d checks, want 2 (late status must be included): %v", len(checks), names(checks))
+		}
+		if n := f.pollCount(); n != 4 {
+			t.Errorf("polled %d times, want 4", n)
+		}
+	})
+
+	t.Run("a check run from another app is waited for", func(t *testing.T) {
+		f := newFakeAPI(t,
+			&poll{checkRuns: []*github.CheckRun{mkCheckRun(1, "SonarCloud", "sonarqubecloud", "in_progress", "")}},
+			&poll{checkRuns: []*github.CheckRun{mkCheckRun(1, "SonarCloud", "sonarqubecloud", "completed", "success")}},
+			&poll{checkRuns: []*github.CheckRun{mkCheckRun(1, "SonarCloud", "sonarqubecloud", "completed", "success")}},
+		)
+		checks, err := wait(f, context.Background(), appear)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(checks), []string{"SonarCloud"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
+		}
+		if n := f.pollCount(); n != 3 {
+			t.Errorf("polled %d times, want 3", n)
+		}
+	})
+
+	t.Run("gives up when no check appears", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{})
+		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, true)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
-		if !strings.Contains(err.Error(), "no workflow runs appeared for deadbeef") {
+		if !strings.Contains(err.Error(), "no checks appeared for deadbeef") || !strings.Contains(err.Error(), "was the commit pushed?") {
 			t.Errorf("error = %q", err)
 		}
-		if n := f.requestCount(); n < 2 {
+		if n := f.pollCount(); n < 2 {
 			t.Errorf("polled %d times, want at least 2 before giving up", n)
 		}
 	})
 
+	t.Run("mentions the missing workflows when nothing appears", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{})
+		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, false)
+		if err == nil || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
+			t.Fatalf("error = %v, want a hint about missing workflows", err)
+		}
+	})
+
 	t.Run("gives up when the context expires", func(t *testing.T) {
-		f := newFakeAPI(t, []*github.WorkflowRun{mkRun(1, "build", "in_progress", "")})
+		f := newFakeAPI(t, runsOnly(mkRun(1, "build", "in_progress", "")))
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		_, err := waitForRuns(ctx, f.client(t), "o", "r", "sha", interval, appear)
+		_, err := wait(f, ctx, appear)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("error = %v, want context.DeadlineExceeded", err)
 		}
 		// The deadline may hit while sleeping ("gave up waiting") or while
-		// the HTTP request is in flight ("listing workflow runs").
+		// one of the HTTP requests is in flight ("listing ...").
 		msg := err.Error()
-		if !strings.Contains(msg, "gave up waiting") && !strings.Contains(msg, "listing workflow runs") {
+		if !strings.Contains(msg, "gave up waiting") && !strings.Contains(msg, "listing ") {
 			t.Errorf("error = %q", err)
 		}
 	})
 
 	t.Run("propagates api errors", func(t *testing.T) {
 		f := newFakeAPI(t, nil)
-		_, err := waitForRuns(context.Background(), f.client(t), "o", "r", "sha", interval, appear)
+		_, err := wait(f, context.Background(), appear)
 		if err == nil || !strings.Contains(err.Error(), "listing workflow runs") {
 			t.Fatalf("error = %v, want listing error", err)
 		}
@@ -529,48 +817,88 @@ func TestRun(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "tok")
 	t.Setenv("GH_TOKEN", "")
 
-	t.Run("all runs succeed", func(t *testing.T) {
+	t.Run("all checks succeed", func(t *testing.T) {
 		dir, _, sha := initRepo(t, remote)
 		t.Chdir(dir)
-		ok := []*github.WorkflowRun{done(1, "build", "success"), done(2, "docs", "skipped"), done(3, "opt", "neutral")}
-		f := newFakeAPI(t, ok)
+		f := newFakeAPI(t, &poll{
+			runs:      []*github.WorkflowRun{done(1, "build", "success"), done(2, "docs", "skipped"), done(3, "opt", "neutral")},
+			checkRuns: []*github.CheckRun{mkCheckRun(4, "SonarCloud", "sonarqubecloud", "completed", "success")},
+			statuses:  []*github.RepoStatus{mkStatus("ci/circleci: lint", "success")},
+		})
 		useFakeAPI(t, f, "tok")
 
-		if err := run("", "", interval, time.Minute, time.Minute, true); err != nil {
-			t.Fatalf("run() = %v, want nil", err)
+		out := captureStdout(t, func() {
+			if err := run("", "", interval, time.Minute, time.Minute, true); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		for _, want := range []string{"✔ build", "✔ SonarCloud", "✔ ci/circleci: lint"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q:\n%s", want, out)
+			}
 		}
-		req := f.requests[0]
-		if req.URL.Path != "/repos/mbraak/waitbuild/actions/runs" {
-			t.Errorf("path = %s, want repo from origin remote", req.URL.Path)
+		for _, suffix := range []string{"/actions/runs", "/check-runs", "/status"} {
+			req := f.request(suffix)
+			if req == nil {
+				t.Fatalf("no request to %s", suffix)
+			}
+			if !strings.HasPrefix(req.URL.Path, "/repos/mbraak/waitbuild/") {
+				t.Errorf("path = %s, want repo from origin remote", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer tok" {
+				t.Errorf("%s: Authorization = %q, want Bearer tok", suffix, got)
+			}
 		}
-		if got := req.URL.Query().Get("head_sha"); got != sha {
+		if got := f.request("/actions/runs").URL.Query().Get("head_sha"); got != sha {
 			t.Errorf("head_sha = %q, want HEAD %s", got, sha)
 		}
-		if got := req.Header.Get("Authorization"); got != "Bearer tok" {
-			t.Errorf("Authorization = %q, want Bearer tok", got)
+		for _, suffix := range []string{"/check-runs", "/status"} {
+			if want := "/repos/mbraak/waitbuild/commits/" + sha + suffix; f.request(suffix).URL.Path != want {
+				t.Errorf("path = %s, want %s", f.request(suffix).URL.Path, want)
+			}
 		}
 	})
 
-	t.Run("repository without workflows fails immediately", func(t *testing.T) {
+	t.Run("repository without workflows waits for statuses", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{})
+		f := newFakeAPI(t,
+			&poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "pending")}},
+			&poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "success")}},
+		)
 		f.noWorkflows = true
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Hour, time.Minute, false)
-		if err == nil || !strings.Contains(err.Error(), "has no GitHub Actions workflows") {
-			t.Fatalf("run() = %v, want no-workflows error", err)
+		out := captureStdout(t, func() {
+			if err := run("", "", interval, time.Minute, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if !strings.Contains(out, "has no GitHub Actions workflows") {
+			t.Errorf("output should mention the missing workflows:\n%s", out)
 		}
-		if n := f.requestCount(); n != 0 {
-			t.Errorf("polled runs %d times, want 0", n)
+		if n := f.pollCount(); n < 3 {
+			t.Errorf("polled %d times, want at least 3", n)
+		}
+	})
+
+	t.Run("repository without workflows and without checks gives up", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, &poll{})
+		f.noWorkflows = true
+		useFakeAPI(t, f, "tok")
+
+		err := run("", "", interval, 20*time.Millisecond, time.Minute, false)
+		if err == nil || !strings.Contains(err.Error(), "no checks appeared") || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
+			t.Fatalf("run() = %v, want no-checks error mentioning the missing workflows", err)
 		}
 	})
 
 	t.Run("a failed run makes run fail", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{done(1, "build", "success"), done(2, "test", "failure")})
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success"), done(2, "test", "failure")))
 		useFakeAPI(t, f, "tok")
 
 		err := run("", "", interval, time.Minute, time.Minute, false)
@@ -579,10 +907,52 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("a failed CircleCI status makes run fail", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, &poll{
+			runs:     []*github.WorkflowRun{done(1, "danger", "success")},
+			statuses: []*github.RepoStatus{mkStatus("ci/circleci: lint", "success"), mkStatus("ci/circleci: test", "failure")},
+		})
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		if err == nil || !strings.Contains(err.Error(), "did not succeed") {
+			t.Fatalf("run() = %v, want failure", err)
+		}
+		if !strings.Contains(out, "✘ ci/circleci: test") {
+			t.Errorf("output should mark the failed status:\n%s", out)
+		}
+	})
+
+	t.Run("an errored status counts as failure", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: build", "error")}})
+		useFakeAPI(t, f, "tok")
+		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+			t.Fatal("run() = nil, want failure for errored status")
+		}
+	})
+
+	t.Run("a failed check run from another app makes run fail", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, &poll{
+			runs:      []*github.WorkflowRun{done(1, "danger", "success")},
+			checkRuns: []*github.CheckRun{mkCheckRun(2, "SonarCloud", "sonarqubecloud", "completed", "failure")},
+		})
+		useFakeAPI(t, f, "tok")
+		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+			t.Fatal("run() = nil, want failure for failed check run")
+		}
+	})
+
 	t.Run("cancelled run counts as failure", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{done(1, "build", "cancelled")})
+		f := newFakeAPI(t, runsOnly(done(1, "build", "cancelled")))
 		useFakeAPI(t, f, "tok")
 		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
 			t.Fatal("run() = nil, want failure for cancelled run")
@@ -592,28 +962,31 @@ func TestRun(t *testing.T) {
 	t.Run("explicit sha overrides HEAD", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{done(1, "build", "success")})
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
 		if err := run("0123456789abcdef", "feature", interval, time.Minute, time.Minute, false); err != nil {
 			t.Fatal(err)
 		}
-		if got := f.requests[0].URL.Query().Get("head_sha"); got != "0123456789abcdef" {
+		if got := f.request("/actions/runs").URL.Query().Get("head_sha"); got != "0123456789abcdef" {
 			t.Errorf("head_sha = %q, want the -sha flag", got)
+		}
+		if got := f.request("/status").URL.Path; got != "/repos/mbraak/waitbuild/commits/0123456789abcdef/status" {
+			t.Errorf("status path = %q, want the -sha flag", got)
 		}
 	})
 
 	t.Run("non-github remote", func(t *testing.T) {
 		dir, _, _ := initRepo(t, "https://gitlab.com/mbraak/waitbuild.git")
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{done(1, "build", "success")})
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
 		err := run("", "", interval, time.Minute, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "not a github.com remote") {
 			t.Fatalf("run() = %v, want remote error", err)
 		}
-		if f.requestCount() != 0 {
+		if len(f.requests) != 0 {
 			t.Error("run() should not call the API with a bad remote")
 		}
 	})
@@ -622,7 +995,7 @@ func TestRun(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
 		t.Setenv("GITHUB_TOKEN", "")
-		f := newFakeAPI(t, []*github.WorkflowRun{done(1, "build", "success")})
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "")
 
 		err := run("", "", interval, time.Minute, time.Minute, false)
@@ -634,7 +1007,7 @@ func TestRun(t *testing.T) {
 	t.Run("overall timeout", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
-		f := newFakeAPI(t, []*github.WorkflowRun{mkRun(1, "build", "in_progress", "")})
+		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "pending")}})
 		useFakeAPI(t, f, "tok")
 
 		err := run("", "", interval, time.Minute, 30*time.Millisecond, false)
@@ -751,30 +1124,31 @@ func TestDrawIconColors(t *testing.T) {
 func TestNotifyURL(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	checks := "https://github.com/o/r/commit/" + sha + "/checks"
-	mk := func(conclusion, url string) *github.WorkflowRun {
-		return &github.WorkflowRun{Conclusion: github.Ptr(conclusion), HTMLURL: github.Ptr(url)}
+	mk := func(conclusion, url string) check {
+		return check{status: "completed", conclusion: conclusion, url: url}
 	}
 	tests := []struct {
-		name string
-		runs []*github.WorkflowRun
-		want string
+		name   string
+		checks []check
+		want   string
 	}{
-		{"no runs", nil, checks},
-		{"all succeeded", []*github.WorkflowRun{mk("success", "u1"), mk("skipped", "u2")}, checks},
-		{"one failed", []*github.WorkflowRun{mk("success", "u1"), mk("failure", "u2")}, "u2"},
-		{"one failed without url", []*github.WorkflowRun{mk("failure", "")}, checks},
-		{"several failed", []*github.WorkflowRun{mk("failure", "u1"), mk("cancelled", "u2")}, checks},
+		{"no checks", nil, checks},
+		{"all succeeded", []check{mk("success", "u1"), mk("skipped", "u2")}, checks},
+		{"one failed", []check{mk("success", "u1"), mk("failure", "u2")}, "u2"},
+		{"one failed status", []check{mk("success", "u1"), mk("error", "https://circleci.com/x")}, "https://circleci.com/x"},
+		{"one failed without url", []check{mk("failure", "")}, checks},
+		{"several failed", []check{mk("failure", "u1"), mk("cancelled", "u2")}, checks},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := notifyURL("", "o", "r", sha, tt.runs); got != tt.want {
+			if got := notifyURL("", "o", "r", sha, tt.checks); got != tt.want {
 				t.Fatalf("notifyURL() = %q, want %q", got, tt.want)
 			}
 		})
 	}
-	t.Run("pull request wins over failed run", func(t *testing.T) {
+	t.Run("pull request wins over failed check", func(t *testing.T) {
 		pr := "https://github.com/o/r/pull/7"
-		if got := notifyURL(pr, "o", "r", sha, []*github.WorkflowRun{mk("failure", "u1")}); got != pr {
+		if got := notifyURL(pr, "o", "r", sha, []check{mk("failure", "u1")}); got != pr {
 			t.Fatalf("notifyURL() = %q, want %q", got, pr)
 		}
 	})

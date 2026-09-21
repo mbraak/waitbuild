@@ -1,5 +1,7 @@
-// waitbuild waits until all GitHub Actions workflow runs for a commit have
-// finished and reports their conclusions.
+// waitbuild waits until every check reported to GitHub for a commit has
+// finished and reports the results: GitHub Actions workflow runs, check runs
+// from other GitHub Apps (SonarCloud, Aikido, ...) and commit statuses from
+// services such as CircleCI.
 //
 // It is meant to be started from a repository's pre-push git hook, but can also
 // be run by hand:
@@ -38,11 +40,37 @@ var successConclusions = map[string]bool{
 	"neutral": true,
 }
 
+// actionsAppSlug is the GitHub App that creates check runs for GitHub Actions
+// jobs. Those are already covered by the workflow runs, so they are skipped
+// when listing check runs to avoid reporting every job twice.
+const actionsAppSlug = "github-actions"
+
+// check is one unit of CI reported to GitHub for a commit: a GitHub Actions
+// workflow run, a check run created by another GitHub App, or a commit status.
+type check struct {
+	key        string // stable identity across polls
+	name       string
+	status     string // as reported by GitHub; "completed" once finished
+	conclusion string // set once completed
+	url        string
+}
+
+func (c check) done() bool { return c.status == "completed" }
+func (c check) ok() bool   { return successConclusions[c.conclusion] }
+
+// state describes the check for the progress output.
+func (c check) state() string {
+	if c.done() {
+		return "completed (" + c.conclusion + ")"
+	}
+	return c.status
+}
+
 func main() {
 	sha := flag.String("sha", "", "commit to wait for (default: HEAD)")
 	branch := flag.String("branch", "", "branch name, for display only (default: current branch)")
 	interval := flag.Duration("interval", 10*time.Second, "poll interval")
-	appearTimeout := flag.Duration("appear-timeout", 3*time.Minute, "how long to wait for the first workflow run to show up")
+	appearTimeout := flag.Duration("appear-timeout", 3*time.Minute, "how long to wait for the first check to show up")
 	timeout := flag.Duration("timeout", 45*time.Minute, "overall timeout")
 	notify := flag.Bool("notify", false, "show a desktop notification (macOS) when the build finishes")
 	testNotify := flag.Bool("test-notify", false, "send a test desktop notification and exit")
@@ -98,25 +126,30 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
 
-	if err := checkHasWorkflows(ctx, client, owner, repo); err != nil {
+	hasWorkflows, err := hasActionsWorkflows(ctx, client, owner, repo)
+	if err != nil {
 		return err
 	}
 	fmt.Printf("waitbuild: waiting for the build of %s (%s) in %s/%s\n", branch, sha[:min(10, len(sha))], owner, repo)
+	if !hasWorkflows {
+		fmt.Printf("waitbuild: %s/%s has no GitHub Actions workflows, waiting for commit statuses and check runs only\n", owner, repo)
+	}
 
-	runs, err := waitForRuns(ctx, client, owner, repo, sha, interval, appearTimeout)
+	checks, err := waitForChecks(ctx, client, owner, repo, sha, interval, appearTimeout, hasWorkflows)
 	if err != nil {
 		return err
 	}
 
 	ok := true
+	width := nameWidth(checks)
 	fmt.Printf("waitbuild: build of %s finished\n", branch)
-	for _, r := range runs {
+	for _, c := range checks {
 		mark := "✔"
-		if !successConclusions[r.GetConclusion()] {
+		if !c.ok() {
 			mark = "✘"
 			ok = false
 		}
-		fmt.Printf("  %s %-30s %-10s %s\n", mark, r.GetName(), r.GetConclusion(), r.GetHTMLURL())
+		fmt.Printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
 	if notify {
@@ -124,13 +157,25 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		if !ok {
 			title = fmt.Sprintf("Build of %s FAILED", branch)
 		}
-		url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, runs)
+		url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
 		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(ok))
 	}
 	if !ok {
-		return errors.New("one or more workflow runs did not succeed")
+		return errors.New("one or more checks did not succeed")
 	}
 	return nil
+}
+
+// nameWidth returns the column width for check names, so that long commit
+// status contexts such as "ci/circleci: database-and-api-integrity" line up.
+func nameWidth(checks []check) int {
+	width := 30
+	for _, c := range checks {
+		if n := len([]rune(c.name)); n > width {
+			width = n
+		}
+	}
+	return width
 }
 
 // newGitHubClient is a variable so tests can point the client at a fake server.
@@ -138,58 +183,59 @@ var newGitHubClient = func(token string) (*github.Client, error) {
 	return github.NewClient(github.WithAuthToken(token))
 }
 
-// checkHasWorkflows fails when the repository has no GitHub Actions workflows
-// at all, so that waiting for a run that can never appear is reported at once
-// instead of after the appear timeout.
-func checkHasWorkflows(ctx context.Context, client *github.Client, owner, repo string) error {
+// hasActionsWorkflows reports whether the repository has any GitHub Actions
+// workflows. A repository without them can still have a build, reported as
+// commit statuses (CircleCI) or check runs (other GitHub Apps), so this only
+// tunes the output and the message shown when nothing appears.
+func hasActionsWorkflows(ctx context.Context, client *github.Client, owner, repo string) (bool, error) {
 	wfs, _, err := client.Actions.ListWorkflows(ctx, owner, repo, &github.ListOptions{PerPage: 1})
 	if err != nil {
-		return fmt.Errorf("listing workflows: %w", err)
+		return false, fmt.Errorf("listing workflows: %w", err)
 	}
-	if wfs.GetTotalCount() == 0 {
-		return fmt.Errorf("%s/%s has no GitHub Actions workflows, so there is no build to wait for", owner, repo)
-	}
-	return nil
+	return wfs.GetTotalCount() > 0, nil
 }
 
-// waitForRuns polls until at least one workflow run exists for sha and every
-// run has completed. Because several workflows are triggered by the same push
-// and can register a few seconds apart, "all completed" has to hold for two
-// consecutive polls before the result is accepted.
-func waitForRuns(ctx context.Context, client *github.Client, owner, repo, sha string, interval, appearTimeout time.Duration) ([]*github.WorkflowRun, error) {
+// waitForChecks polls until at least one check exists for sha and every check
+// has completed. Because several workflows and services report on the same
+// push and can register a few seconds apart, "all completed" has to hold for
+// two consecutive polls before the result is accepted.
+func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool) ([]check, error) {
 	start := time.Now()
-	seen := map[int64]string{} // run id -> last reported state
+	seen := map[string]string{} // check key -> last reported state
 	settledOnce := false
+	width := 30
 
 	for {
-		runs, err := listRuns(ctx, client, owner, repo, sha)
+		checks, err := listChecks(ctx, client, owner, repo, sha)
 		if err != nil {
 			return nil, err
 		}
 
-		if len(runs) == 0 {
-			if time.Since(start) > appearTimeout {
-				return nil, fmt.Errorf("no workflow runs appeared for %s within %s (was the commit pushed?)", sha, appearTimeout)
+		if len(checks) == 0 && time.Since(start) > appearTimeout {
+			hint := "was the commit pushed?"
+			if !hasWorkflows {
+				hint = "the repository has no GitHub Actions workflows; was the commit pushed and is CI configured?"
 			}
+			return nil, fmt.Errorf("no checks appeared for %s within %s (%s)", sha, appearTimeout, hint)
 		}
 
-		allDone := len(runs) > 0
-		for _, r := range runs {
-			state := r.GetStatus()
-			if state == "completed" {
-				state = "completed (" + r.GetConclusion() + ")"
-			} else {
+		if w := nameWidth(checks); w > width {
+			width = w
+		}
+		allDone := len(checks) > 0
+		for _, c := range checks {
+			if !c.done() {
 				allDone = false
 			}
-			if seen[r.GetID()] != state {
-				seen[r.GetID()] = state
-				fmt.Printf("  %-30s %s\n", r.GetName(), state)
+			if state := c.state(); seen[c.key] != state {
+				seen[c.key] = state
+				fmt.Printf("  %-*s %s\n", width, c.name, state)
 			}
 		}
 
 		if allDone {
 			if settledOnce {
-				return runs, nil
+				return checks, nil
 			}
 			settledOnce = true
 		} else {
@@ -204,8 +250,31 @@ func waitForRuns(ctx context.Context, client *github.Client, owner, repo, sha st
 	}
 }
 
-func listRuns(ctx context.Context, client *github.Client, owner, repo, sha string) ([]*github.WorkflowRun, error) {
-	var all []*github.WorkflowRun
+// listChecks gathers everything GitHub knows about the commit's CI: Actions
+// workflow runs, check runs from other GitHub Apps and commit statuses. The
+// result is sorted by name.
+func listChecks(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
+	runs, err := listRuns(ctx, client, owner, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	checkRuns, err := listCheckRuns(ctx, client, owner, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	statuses, err := listStatuses(ctx, client, owner, repo, sha)
+	if err != nil {
+		return nil, err
+	}
+
+	all := append(append(runs, checkRuns...), statuses...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].name < all[j].name })
+	return all, nil
+}
+
+// listRuns returns the GitHub Actions workflow runs for sha.
+func listRuns(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
+	var all []check
 	opts := &github.ListWorkflowRunsOptions{
 		HeadSHA:     sha,
 		ListOptions: github.ListOptions{PerPage: 100},
@@ -215,13 +284,83 @@ func listRuns(ctx context.Context, client *github.Client, owner, repo, sha strin
 		if err != nil {
 			return nil, fmt.Errorf("listing workflow runs: %w", err)
 		}
-		all = append(all, runs.WorkflowRuns...)
+		for _, r := range runs.WorkflowRuns {
+			all = append(all, check{
+				key:        fmt.Sprintf("run:%d", r.GetID()),
+				name:       r.GetName(),
+				status:     r.GetStatus(),
+				conclusion: r.GetConclusion(),
+				url:        r.GetHTMLURL(),
+			})
+		}
 		if resp.NextPage == 0 {
 			break
 		}
 		opts.Page = resp.NextPage
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].GetName() < all[j].GetName() })
+	return all, nil
+}
+
+// listCheckRuns returns the check runs for sha created by GitHub Apps other
+// than GitHub Actions, whose runs listRuns already reports per workflow.
+func listCheckRuns(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
+	var all []check
+	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		res, resp, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, sha, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing check runs: %w", err)
+		}
+		for _, r := range res.CheckRuns {
+			if r.GetApp().GetSlug() == actionsAppSlug {
+				continue
+			}
+			all = append(all, check{
+				key:        fmt.Sprintf("check:%d", r.GetID()),
+				name:       r.GetName(),
+				status:     r.GetStatus(),
+				conclusion: r.GetConclusion(),
+				url:        r.GetHTMLURL(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// listStatuses returns the commit statuses for sha, one per context (for
+// example "ci/circleci: lint"). The combined status endpoint already reduces
+// each context to its latest status. A status is "completed" unless pending,
+// and its state (success, failure or error) doubles as the conclusion.
+func listStatuses(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
+	var all []check
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		combined, resp, err := client.Repositories.GetCombinedStatus(ctx, owner, repo, sha, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing commit statuses: %w", err)
+		}
+		for _, s := range combined.Statuses {
+			c := check{
+				key:    "status:" + s.GetContext(),
+				name:   s.GetContext(),
+				status: "pending",
+				url:    s.GetTargetURL(),
+			}
+			if s.GetState() != "pending" {
+				c.status = "completed"
+				c.conclusion = s.GetState()
+			}
+			all = append(all, c)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
 	return all, nil
 }
 
@@ -338,20 +477,20 @@ func pullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha
 }
 
 // notifyURL picks the page a notification should open: the commit's pull
-// request when it has one, otherwise the single failed run when there is
+// request when it has one, otherwise the single failed check when there is
 // exactly one, otherwise the commit's checks page on GitHub.
-func notifyURL(prURL, owner, repo, sha string, runs []*github.WorkflowRun) string {
+func notifyURL(prURL, owner, repo, sha string, checks []check) string {
 	if prURL != "" {
 		return prURL
 	}
-	var failed []*github.WorkflowRun
-	for _, r := range runs {
-		if !successConclusions[r.GetConclusion()] {
-			failed = append(failed, r)
+	var failed []check
+	for _, c := range checks {
+		if !c.ok() {
+			failed = append(failed, c)
 		}
 	}
-	if len(failed) == 1 && failed[0].GetHTMLURL() != "" {
-		return failed[0].GetHTMLURL()
+	if len(failed) == 1 && failed[0].url != "" {
+		return failed[0].url
 	}
 	return fmt.Sprintf("https://github.com/%s/%s/commit/%s/checks", owner, repo, sha)
 }

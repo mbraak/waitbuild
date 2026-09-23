@@ -50,11 +50,29 @@ waitbuild                 # build of HEAD
 waitbuild -sha <commit>   # build of a specific commit
 waitbuild -pr             # print the URL of the pull request for HEAD
 waitbuild -quiet -notify  # print nothing; report via notification and exit code
+waitbuild -fix            # when the build fails, let Claude Code fix the pull request
 waitbuild -help           # all flags
 ```
 
 `-pr` prints the pull request that contains the commit (an open one when there
 are several) and exits with 1 when there is none.
+
+`-fix` hands a failed build to [Claude Code](https://claude.com/claude-code):
+it runs `claude -p` in the repository root with a prompt that points at the
+commit's pull request, lets Claude look up the failed checks and their logs
+with `gh`, and commits the changes it makes as `Fix build`. The commit is not
+pushed; push it to rebuild. A commit without a pull request is not fixed.
+
+It only runs when the built commit is still `HEAD` on the same branch and the
+working tree is clean, so that work started after the push is never swept
+into the commit. Nothing is committed when Claude fails or changes nothing; a
+commit Claude makes by itself is kept as is. The exit code stays 1, because
+the pushed build did fail.
+
+Claude runs with `--permission-mode acceptEdits` and may run `gh pr view`,
+`gh pr checks`, `gh pr diff` and `gh run view` without asking. It cannot ask
+for anything else in print mode, so allow further commands, such as the
+project's tests, in the project's `.claude/settings.json`.
 
 `-quiet` suppresses all output on stdout; errors are still written to stderr.
 

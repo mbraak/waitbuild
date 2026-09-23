@@ -9,6 +9,7 @@
 //	waitbuild            # waits for the build of HEAD
 //	waitbuild -sha <sha> # waits for the build of a specific commit
 //	waitbuild -pr        # prints the URL of the pull request for HEAD
+//	waitbuild -fix       # lets Claude Code fix the pull request when the build fails
 //
 // Authentication: GITHUB_TOKEN or GH_TOKEN, falling back to `gh auth token`.
 package main
@@ -21,6 +22,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -88,6 +90,7 @@ func main() {
 	notify := flag.Bool("notify", false, "show a desktop notification (macOS) when the build finishes")
 	testNotify := flag.Bool("test-notify", false, "send a test desktop notification and exit")
 	printPR := flag.Bool("pr", false, "print the URL of the pull request for the commit and exit")
+	fix := flag.Bool("fix", false, "when the build fails, let Claude Code fix the pull request and commit its changes")
 	flag.BoolVar(&quiet, "quiet", false, "print nothing to the console; only the exit code (and -notify) report the result")
 	flag.Parse()
 
@@ -107,13 +110,13 @@ func main() {
 		return
 	}
 
-	if err := run(*sha, *branch, *interval, *appearTimeout, *timeout, *notify); err != nil {
+	if err := run(*sha, *branch, *interval, *appearTimeout, *timeout, *notify, *fix); err != nil {
 		fmt.Fprintln(os.Stderr, "waitbuild:", err)
 		os.Exit(1)
 	}
 }
 
-func run(sha, branch string, interval, appearTimeout, timeout time.Duration, notify bool) error {
+func run(sha, branch string, interval, appearTimeout, timeout time.Duration, notify, fix bool) error {
 	info, err := repoInfo()
 	if err != nil {
 		return err
@@ -166,18 +169,146 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
+	var prURL string
+	if !ok || notify {
+		prURL = pullRequestURL(ctx, client, owner, repo, sha)
+	}
+
+	fixed := false
+	if !ok && fix {
+		if prURL == "" {
+			fmt.Fprintf(os.Stderr, "waitbuild: -fix: no pull request found for %s; not running claude\n", sha[:min(10, len(sha))])
+		} else if fixed, err = fixBuild(prURL, sha, branch); err != nil {
+			fmt.Fprintln(os.Stderr, "waitbuild: -fix:", err)
+		}
+	}
+
 	if notify {
 		title := fmt.Sprintf("Build of %s succeeded", branch)
 		if !ok {
 			title = fmt.Sprintf("Build of %s FAILED", branch)
 		}
-		url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
-		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(ok))
+		message := fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))])
+		if fixed {
+			message += ", fix committed"
+		}
+		url := notifyURL(prURL, owner, repo, sha, checks)
+		desktopNotify(title, message, url, iconFile(ok))
 	}
 	if !ok {
 		return errors.New("one or more checks did not succeed")
 	}
 	return nil
+}
+
+// fixMessage is the commit message for the changes Claude makes with -fix.
+const fixMessage = "Fix build"
+
+// claudeTools are the commands Claude may run without asking while fixing a
+// build: the gh commands for reading the pull request, its checks and the
+// logs of failed runs. File edits are allowed through acceptEdits. A project
+// can allow more, such as its test command, in its .claude/settings.json.
+var claudeTools = []string{
+	"Bash(gh pr view:*)",
+	"Bash(gh pr checks:*)",
+	"Bash(gh pr diff:*)",
+	"Bash(gh run view:*)",
+}
+
+// fixPrompt asks Claude to fix the failed build of the pull request at prURL.
+func fixPrompt(prURL, sha string) string {
+	return fmt.Sprintf("The CI build of pull request %s failed for commit %s. "+
+		"Look up the failed checks and their logs with gh (for example `gh pr checks %s` and `gh run view <run-id> --log-failed`), "+
+		"then fix the cause in this repository with the smallest change that makes the build pass. "+
+		"Do not commit or push; the changes are committed for you.", prURL, sha, prURL)
+}
+
+// fixBuild runs Claude Code in print mode in the repository root after a
+// failed build, pointing it at the pull request, and commits the changes it
+// makes. It reports whether a commit was made, also when Claude made one
+// itself. Because waitbuild usually runs in the background after a push, it
+// refuses to touch the repository unless HEAD is still sha on branch and the
+// working tree is clean, so that work started in the meantime is never swept
+// into the commit.
+func fixBuild(prURL, sha, branch string) (bool, error) {
+	root, err := git("", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false, err
+	}
+	if head, err := git(root, "rev-parse", "HEAD"); err != nil {
+		return false, err
+	} else if head != sha {
+		return false, fmt.Errorf("HEAD is now %s instead of the built commit %s; not running claude", head[:min(10, len(head))], sha[:min(10, len(sha))])
+	}
+	if current, err := git(root, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
+		return false, err
+	} else if current != branch {
+		return false, fmt.Errorf("the checked out branch is now %s instead of %s; not running claude", current, branch)
+	}
+	if status, err := git(root, "status", "--porcelain"); err != nil {
+		return false, err
+	} else if status != "" {
+		return false, errors.New("the working tree has uncommitted changes; not running claude")
+	}
+
+	printf("waitbuild: asking claude to fix %s\n", prURL)
+	// --allowedTools takes a list, so the prompt must come before it.
+	args := append([]string{"-p", fixPrompt(prURL, sha), "--permission-mode", "acceptEdits", "--allowedTools"}, claudeTools...)
+	cmd := exec.Command("claude", args...)
+	cmd.Dir = root
+	cmd.Stdout = io.Discard
+	if !quiet {
+		cmd.Stdout = os.Stdout
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("claude: %w", err)
+	}
+
+	head, err := git(root, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	committed := head != sha // claude committed by itself
+	status, err := git(root, "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	if status == "" && !committed {
+		printf("waitbuild: claude made no changes, nothing to commit\n")
+		return false, nil
+	}
+	if status != "" {
+		if _, err := git(root, "add", "--all"); err != nil {
+			return false, err
+		}
+		if _, err := git(root, "commit", "--quiet", "--message", fixMessage); err != nil {
+			return false, err
+		}
+	}
+	commit, err := git(root, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	printf("waitbuild: committed the fix by claude as %s; push to rebuild\n", commit)
+	return true, nil
+}
+
+// git runs git with args in dir (the working directory when empty) and
+// returns its trimmed output.
+func git(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("git %s: %s", args[0], msg)
+		}
+		return "", fmt.Errorf("git %s: %w", args[0], err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // nameWidth returns the column width for check names, so that long commit

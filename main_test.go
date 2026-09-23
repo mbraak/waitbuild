@@ -821,7 +821,7 @@ func TestRun(t *testing.T) {
 		dir, _, sha := initRepo(t, remote)
 		t.Chdir(dir)
 		f := newFakeAPI(t, &poll{
-			runs:      []*github.WorkflowRun{done(1, "build", "success"), done(2, "docs", "skipped"), done(3, "opt", "neutral")},
+			runs:      []*github.WorkflowRun{done(1, "build", "success"), done(2, "docs", "skipped")},
 			checkRuns: []*github.CheckRun{mkCheckRun(4, "SonarCloud", "sonarqubecloud", "completed", "success")},
 			statuses:  []*github.RepoStatus{mkStatus("ci/circleci: lint", "success")},
 		})

@@ -60,8 +60,12 @@ are several) and exits with 1 when there is none.
 `-fix` hands a failed build to [Claude Code](https://claude.com/claude-code):
 it runs `claude -p` in the repository root with a prompt that points at the
 commit's pull request, lets Claude look up the failed checks and their logs
-with `gh`, commits the changes it makes as `Fix build` and pushes them to the
-branch. A commit without a pull request is not fixed.
+with `gh`, analyze why the build failed and fix it, then commits the changes as
+`Fix build` and pushes them to the branch. Claude's analysis (which checks
+failed, the root cause and what it changed) is printed and becomes the body of
+the commit message, so it also shows up on the pull request. The analysis is
+printed even when Claude changes nothing. A commit without a pull request is
+not fixed.
 
 The fix commit carries a `Waitbuild-Fix: <sha>` trailer, and the build of such
 a commit is never fixed again. The push starts the pre-push hook, and with it

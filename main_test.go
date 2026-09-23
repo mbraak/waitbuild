@@ -1368,7 +1368,7 @@ func TestFixBuild(t *testing.T) {
 		dir, repo, sha := initRepo(t, "")
 		t.Chdir(dir)
 		bare := bareOrigin(t, dir, "")
-		argsFile := fakeClaude(t, "echo fixed > README")
+		argsFile := fakeClaude(t, "echo fixed > README; echo 'The build failed because README was stale.'")
 
 		var fixed bool
 		var err error
@@ -1385,6 +1385,13 @@ func TestFixBuild(t *testing.T) {
 		}
 		if got := fixOf(t, head); got != sha {
 			t.Errorf("%s trailer = %q, want the built commit %s", fixTrailer, got, sha)
+		}
+		const analysis = "The build failed because README was stale."
+		if want := fixMessage + "\n\n" + analysis + "\n\n"; !strings.HasPrefix(head.Message, want) {
+			t.Errorf("commit message = %q, want the analysis as its body", head.Message)
+		}
+		if !strings.Contains(out, "analysis by claude:\n"+analysis) {
+			t.Errorf("output lacks the analysis:\n%s", out)
 		}
 		if head.ParentHashes[0].String() != sha {
 			t.Errorf("parent = %s, want the built commit %s", head.ParentHashes[0], sha)
@@ -1471,10 +1478,16 @@ func TestFixBuild(t *testing.T) {
 	t.Run("no changes, no commit", func(t *testing.T) {
 		dir, repo, sha := initRepo(t, "")
 		t.Chdir(dir)
-		fakeClaude(t, "true")
+		fakeClaude(t, "echo 'The runner ran out of disk space.'")
 
-		if fixed, err := fixBuild(prURL, sha, "main"); err != nil || fixed {
+		var fixed bool
+		var err error
+		out := captureStdout(t, func() { fixed, err = fixBuild(prURL, sha, "main") })
+		if err != nil || fixed {
 			t.Fatalf("fixBuild() = %v, %v, want false, nil", fixed, err)
+		}
+		if !strings.Contains(out, "The runner ran out of disk space.") {
+			t.Errorf("the analysis should be shown without a fix too:\n%s", out)
 		}
 		if headOf(t, repo).Hash.String() != sha {
 			t.Error("a commit was made")

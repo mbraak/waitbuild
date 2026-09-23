@@ -220,12 +220,17 @@ var claudeTools = []string{
 	"Bash(gh run view:*)",
 }
 
-// fixPrompt asks Claude to fix the failed build of the pull request at prURL.
+// fixPrompt asks Claude to analyze and fix the failed build of the pull
+// request at prURL. Its reply, the analysis, becomes the body of the fix
+// commit message.
 func fixPrompt(prURL, sha string) string {
 	return fmt.Sprintf("The CI build of pull request %s failed for commit %s. "+
 		"Look up the failed checks and their logs with gh (for example `gh pr checks %s` and `gh run view <run-id> --log-failed`), "+
+		"analyze why the build failed, "+
 		"then fix the cause in this repository with the smallest change that makes the build pass. "+
-		"Do not commit or push; the changes are committed and pushed for you.", prURL, sha, prURL)
+		"Do not commit or push; the changes are committed and pushed for you. "+
+		"Finally, reply with only your analysis: which checks failed, the root cause, and what you changed (or why you changed nothing). "+
+		"The reply becomes the body of the commit message, so write plain text without Markdown, wrapped at 72 characters.", prURL, sha, prURL)
 }
 
 // fixBuild runs Claude Code in print mode in the repository root after a
@@ -264,11 +269,13 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 		return false, errors.New("the working tree has uncommitted changes; not running claude")
 	}
 
-	printf("waitbuild: asking claude to fix %s\n", prURL)
-	// --allowedTools takes a list, so the prompt must come before it.
-	args := append([]string{"-p", fixPrompt(prURL, sha), "--permission-mode", "acceptEdits", "--allowedTools"}, claudeTools...)
-	if err := runVisible(root, "claude", args...); err != nil {
+	printf("waitbuild: asking claude to analyze and fix %s\n", prURL)
+	analysis, err := runClaude(root, fixPrompt(prURL, sha))
+	if err != nil {
 		return false, fmt.Errorf("claude: %w", err)
+	}
+	if analysis != "" {
+		printf("waitbuild: analysis by claude:\n%s\n", analysis)
 	}
 
 	head, err := git(root, "rev-parse", "HEAD")
@@ -290,7 +297,11 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 		printf("waitbuild: claude made no changes, nothing to commit\n")
 		return false, nil
 	}
-	if _, err := git(root, "commit", "--quiet", "--message", fixMessage, "--trailer", fixTrailer+": "+sha); err != nil {
+	commitArgs := []string{"commit", "--quiet", "--message", fixMessage}
+	if analysis != "" {
+		commitArgs = append(commitArgs, "--message", analysis)
+	}
+	if _, err := git(root, append(commitArgs, "--trailer", fixTrailer+": "+sha)...); err != nil {
 		return false, err
 	}
 	commit, err := git(root, "rev-parse", "--short", "HEAD")
@@ -302,6 +313,33 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 	}
 	printf("waitbuild: pushed the fix by claude as %s to %s\n", commit, branch)
 	return true, nil
+}
+
+// runClaude runs Claude Code in print mode in dir with prompt and returns its
+// reply. The reply is collected in a temporary file rather than a pipe, for
+// the reason given at runVisible.
+func runClaude(dir, prompt string) (string, error) {
+	out, err := os.CreateTemp("", "waitbuild-claude-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(out.Name())
+	defer out.Close()
+
+	// --allowedTools takes a list, so the prompt must come before it.
+	args := append([]string{"-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools"}, claudeTools...)
+	cmd := exec.Command("claude", args...)
+	cmd.Dir = dir
+	cmd.Stdout = out
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	reply, err := os.ReadFile(out.Name())
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(reply)), nil
 }
 
 // runVisible runs name with args in dir, with its output on the terminal (or

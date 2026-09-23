@@ -828,7 +828,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		out := captureStdout(t, func() {
-			if err := run("", "", interval, time.Minute, time.Minute, true); err != nil {
+			if err := run("", "", interval, time.Minute, time.Minute, true, false); err != nil {
 				t.Errorf("run() = %v, want nil", err)
 			}
 		})
@@ -871,7 +871,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(func() { quiet = false })
 
 		var err error
-		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false, false) })
 		if err == nil {
 			t.Fatal("run() = nil, want failure: -quiet must not change the exit status")
 		}
@@ -891,7 +891,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		out := captureStdout(t, func() {
-			if err := run("", "", interval, time.Minute, time.Minute, false); err != nil {
+			if err := run("", "", interval, time.Minute, time.Minute, false, false); err != nil {
 				t.Errorf("run() = %v, want nil", err)
 			}
 		})
@@ -910,7 +910,7 @@ func TestRun(t *testing.T) {
 		f.noWorkflows = true
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, 20*time.Millisecond, time.Minute, false)
+		err := run("", "", interval, 20*time.Millisecond, time.Minute, false, false)
 		if err == nil || !strings.Contains(err.Error(), "no checks appeared") || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
 			t.Fatalf("run() = %v, want no-checks error mentioning the missing workflows", err)
 		}
@@ -922,7 +922,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success"), done(2, "test", "failure")))
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", interval, time.Minute, time.Minute, false, false)
 		if err == nil || !strings.Contains(err.Error(), "did not succeed") {
 			t.Fatalf("run() = %v, want failure", err)
 		}
@@ -938,7 +938,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		var err error
-		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false, false) })
 		if err == nil || !strings.Contains(err.Error(), "did not succeed") {
 			t.Fatalf("run() = %v, want failure", err)
 		}
@@ -952,7 +952,7 @@ func TestRun(t *testing.T) {
 		t.Chdir(dir)
 		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: build", "error")}})
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", interval, time.Minute, time.Minute, false, false); err == nil {
 			t.Fatal("run() = nil, want failure for errored status")
 		}
 	})
@@ -965,7 +965,7 @@ func TestRun(t *testing.T) {
 			checkRuns: []*github.CheckRun{mkCheckRun(2, "SonarCloud", "sonarqubecloud", "completed", "failure")},
 		})
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", interval, time.Minute, time.Minute, false, false); err == nil {
 			t.Fatal("run() = nil, want failure for failed check run")
 		}
 	})
@@ -975,7 +975,7 @@ func TestRun(t *testing.T) {
 		t.Chdir(dir)
 		f := newFakeAPI(t, runsOnly(done(1, "build", "cancelled")))
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", interval, time.Minute, time.Minute, false, false); err == nil {
 			t.Fatal("run() = nil, want failure for cancelled run")
 		}
 	})
@@ -986,7 +986,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
-		if err := run("0123456789abcdef", "feature", interval, time.Minute, time.Minute, false); err != nil {
+		if err := run("0123456789abcdef", "feature", interval, time.Minute, time.Minute, false, false); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.request("/actions/runs").URL.Query().Get("head_sha"); got != "0123456789abcdef" {
@@ -1003,7 +1003,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", interval, time.Minute, time.Minute, false, false)
 		if err == nil || !strings.Contains(err.Error(), "not a github.com remote") {
 			t.Fatalf("run() = %v, want remote error", err)
 		}
@@ -1019,7 +1019,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", interval, time.Minute, time.Minute, false, false)
 		if err == nil || !strings.Contains(err.Error(), "no GitHub token") {
 			t.Fatalf("run() = %v, want token error", err)
 		}
@@ -1031,7 +1031,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "pending")}})
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, 30*time.Millisecond, false)
+		err := run("", "", interval, time.Minute, 30*time.Millisecond, false, false)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("run() = %v, want deadline exceeded", err)
 		}
@@ -1039,7 +1039,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("outside a repository", func(t *testing.T) {
 		t.Chdir(t.TempDir())
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", interval, time.Minute, time.Minute, false, false)
 		if err == nil || !strings.Contains(err.Error(), "opening git repository") {
 			t.Fatalf("run() = %v, want repository error", err)
 		}
@@ -1284,6 +1284,440 @@ func TestPullRequestURL(t *testing.T) {
 		}
 		if got := pullRequestURL(context.Background(), c, "o", "r", sha); got != "" {
 			t.Fatalf("pullRequestURL() = %q, want \"\"", got)
+		}
+	})
+}
+
+// --- fixBuild --------------------------------------------------------------
+
+// fakeClaude puts a claude on PATH that writes its arguments, one per line, to
+// the file "args" next to it and its working directory to "pwd", and then runs
+// script. It returns the path of the args file.
+func fakeClaude(t *testing.T, script string) string {
+	t.Helper()
+	bin := t.TempDir()
+	args := filepath.Join(bin, "args")
+	body := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\npwd -P > %q\n%s\n", args, filepath.Join(bin, "pwd"), script)
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return args
+}
+
+// isolateGit keeps the git commands fixBuild runs away from the user's
+// configuration (signing, hooks, ...) and gives them an identity.
+func isolateGit(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_AUTHOR_NAME", "test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+}
+
+// bareOrigin creates a bare repository as origin of dir, pushes main to it
+// and returns its path. With remote not empty, the git command redirects the
+// existing origin URL to it instead, so that nothing is fetched from or pushed
+// to GitHub. The redirect is passed through the environment, so that repoInfo
+// (go-git) still sees the GitHub URL.
+func bareOrigin(t *testing.T, dir, remote string) string {
+	t.Helper()
+	bare := t.TempDir()
+	if _, err := git(bare, "init", "--quiet", "--bare"); err != nil {
+		t.Fatal(err)
+	}
+	if remote == "" {
+		if _, err := git(dir, "remote", "add", "origin", bare); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Setenv("GIT_CONFIG_COUNT", "1")
+		t.Setenv("GIT_CONFIG_KEY_0", "url."+bare+".insteadOf")
+		t.Setenv("GIT_CONFIG_VALUE_0", remote)
+	}
+	if _, err := git(dir, "push", "--quiet", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	return bare
+}
+
+// fixOf returns the fixTrailer value of commit, or "" when it has none.
+func fixOf(t *testing.T, commit *object.Commit) string {
+	t.Helper()
+	for _, line := range strings.Split(commit.Message, "\n") {
+		if v, ok := strings.CutPrefix(line, fixTrailer+": "); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// pushedFix returns the commit main points at in bare, which fixBuild pushes
+// to; its objects are in repo too.
+func pushedFix(t *testing.T, repo *gogit.Repository, bare string) *object.Commit {
+	t.Helper()
+	pushed, err := git(bare, "rev-parse", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := repo.CommitObject(plumbing.NewHash(pushed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commit
+}
+
+func TestFixBuild(t *testing.T) {
+	const prURL = "https://github.com/mbraak/waitbuild/pull/7"
+	isolateGit(t)
+
+	headOf := func(t *testing.T, repo *gogit.Repository) string {
+		t.Helper()
+		head, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return head.Hash().String()
+	}
+	worktrees := func(t *testing.T, dir string) int {
+		t.Helper()
+		out, err := git(dir, "worktree", "list", "--porcelain")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(out, "worktree ")
+	}
+
+	t.Run("commits and pushes the changes of claude", func(t *testing.T) {
+		dir, repo, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		argsFile := fakeClaude(t, "echo fixed > README; echo 'The build failed because README was stale.'")
+
+		var fixed bool
+		var err error
+		out := captureStdout(t, func() { fixed, err = fixBuild(prURL, sha, "main") })
+		if err != nil || !fixed {
+			t.Fatalf("fixBuild() = %v, %v, want true, nil", fixed, err)
+		}
+		fix := pushedFix(t, repo, bare)
+		if fix.Hash.String() == sha {
+			t.Fatal("no fix was pushed")
+		}
+		if got := strings.SplitN(fix.Message, "\n", 2)[0]; got != fixMessage {
+			t.Errorf("commit subject = %q, want %q", got, fixMessage)
+		}
+		if got := fixOf(t, fix); got != sha {
+			t.Errorf("%s trailer = %q, want the built commit %s", fixTrailer, got, sha)
+		}
+		const analysis = "The build failed because README was stale."
+		if want := fixMessage + "\n\n" + analysis + "\n\n"; !strings.HasPrefix(fix.Message, want) {
+			t.Errorf("commit message = %q, want the analysis as its body", fix.Message)
+		}
+		if fix.ParentHashes[0].String() != sha {
+			t.Errorf("parent = %s, want the built commit %s", fix.ParentHashes[0], sha)
+		}
+		if !strings.Contains(out, "analysis by claude:\n"+analysis) {
+			t.Errorf("output lacks the analysis:\n%s", out)
+		}
+		if !strings.Contains(out, "pushed the fix") {
+			t.Errorf("output lacks the push:\n%s", out)
+		}
+
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		want := append([]string{"-p", fixPrompt(prURL, sha), "--permission-mode", "acceptEdits", "--allowedTools"}, claudeTools...)
+		if !equalStrings(args, want) {
+			t.Errorf("claude args = %q, want %q", args, want)
+		}
+		if !strings.Contains(args[1], prURL) {
+			t.Errorf("prompt does not reference the pull request: %q", args[1])
+		}
+	})
+
+	t.Run("claude works in a temporary worktree of the commit", func(t *testing.T) {
+		dir, repo, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		// Work in progress in the checkout: a later commit and uncommitted changes.
+		os.WriteFile(filepath.Join(dir, "later"), nil, 0o644)
+		git(dir, "add", "later")
+		git(dir, "commit", "--quiet", "-m", "later")
+		later := headOf(t, repo)
+		os.WriteFile(filepath.Join(dir, "README"), []byte("work in progress\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "wip"), nil, 0o644)
+		argsFile := fakeClaude(t, "test ! -e later && test ! -e wip && grep -q hi README && echo fixed > README")
+
+		if fixed, err := fixBuild(prURL, sha, "main"); err != nil || !fixed {
+			t.Fatalf("fixBuild() = %v, %v, want true, nil", fixed, err)
+		}
+		raw, _ := os.ReadFile(filepath.Join(filepath.Dir(argsFile), "pwd"))
+		pwd := strings.TrimSpace(string(raw))
+		if real, _ := filepath.EvalSymlinks(dir); pwd == real {
+			t.Error("claude ran in the checkout instead of a worktree")
+		}
+		if got := filepath.Base(pwd); got != filepath.Base(dir) {
+			t.Errorf("worktree is named %q, want the repository name %q", got, filepath.Base(dir))
+		}
+
+		fix := pushedFix(t, repo, bare)
+		if fix.ParentHashes[0].String() != sha {
+			t.Errorf("parent = %s, want the built commit %s", fix.ParentHashes[0], sha)
+		}
+		if _, err := fix.File("wip"); err == nil {
+			t.Error("uncommitted work from the checkout ended up in the fix")
+		}
+		if headOf(t, repo) != later {
+			t.Error("the checkout's branch was changed")
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "README")); string(got) != "work in progress\n" {
+			t.Errorf("README in the checkout = %q, want the uncommitted work kept", got)
+		}
+		if _, err := os.Stat(pwd); err == nil {
+			t.Errorf("temporary worktree %s was not removed", pwd)
+		}
+		if n := worktrees(t, dir); n != 1 {
+			t.Errorf("%d worktrees after fixBuild, want the temporary one removed", n)
+		}
+	})
+
+	t.Run("worktree shares the git-crypt key", func(t *testing.T) {
+		dir, repo, _ := initRepo(t, "")
+		t.Chdir(dir)
+		// A filter that, like git-crypt, only works when it finds the key in
+		// the git directory of the worktree it runs in.
+		keys := filepath.Join(dir, ".git", "git-crypt", "keys")
+		os.MkdirAll(keys, 0o755)
+		os.WriteFile(filepath.Join(keys, "default"), []byte("key"), 0o600)
+		filter := `test -f "$(git rev-parse --git-dir)/git-crypt/keys/default" || { echo "Unable to open key file" >&2; exit 1; }; cat`
+		git(dir, "config", "filter.crypt.smudge", filter)
+		git(dir, "config", "filter.crypt.clean", filter)
+		git(dir, "config", "filter.crypt.required", "true")
+		os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("secret filter=crypt\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "secret"), []byte("s3cret\n"), 0o644)
+		git(dir, "add", ".gitattributes", "secret")
+		git(dir, "commit", "--quiet", "-m", "secret")
+		sha := headOf(t, repo)
+		bare := bareOrigin(t, dir, "")
+		fakeClaude(t, "grep -q s3cret secret && echo fixed > README")
+
+		if fixed, err := fixBuild(prURL, sha, "main"); err != nil || !fixed {
+			t.Fatalf("fixBuild() = %v, %v, want true, nil", fixed, err)
+		}
+		if fixOf(t, pushedFix(t, repo, bare)) != sha {
+			t.Error("the fix was not pushed")
+		}
+		if _, err := os.Stat(filepath.Join(keys, "default")); err != nil {
+			t.Errorf("removing the worktree removed the key of the repository: %v", err)
+		}
+		if n := worktrees(t, dir); n != 1 {
+			t.Errorf("%d worktrees after fixBuild, want the temporary one removed", n)
+		}
+	})
+
+	t.Run("commits of claude become one fix commit", func(t *testing.T) {
+		dir, repo, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		fakeClaude(t, "echo fixed > README && git commit --quiet -am one && echo more > other && git add other && git commit --quiet -m two")
+
+		if fixed, err := fixBuild(prURL, sha, "main"); err != nil || !fixed {
+			t.Fatalf("fixBuild() = %v, %v, want true, nil", fixed, err)
+		}
+		fix := pushedFix(t, repo, bare)
+		if fix.ParentHashes[0].String() != sha {
+			t.Errorf("parent = %s, want the built commit %s", fix.ParentHashes[0], sha)
+		}
+		if fixOf(t, fix) != sha {
+			t.Errorf("fix commit lacks the %s trailer:\n%s", fixTrailer, fix.Message)
+		}
+		for _, name := range []string{"README", "other"} {
+			if _, err := fix.File(name); err != nil {
+				t.Errorf("fix commit lacks %s: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("push fails when origin moved meanwhile", func(t *testing.T) {
+		dir, _, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		// Someone pushes while claude works.
+		fakeClaude(t, fmt.Sprintf("echo fixed > README && git -C %q update-ref refs/heads/main $(git -C %q commit-tree -p %s -m other %s^{tree})", bare, bare, sha, sha))
+
+		fixed, err := fixBuild(prURL, sha, "main")
+		if err == nil || fixed || !strings.Contains(err.Error(), "pushing it failed") || !strings.Contains(err.Error(), "cherry-pick") {
+			t.Fatalf("fixBuild() = %v, %v, want a push error", fixed, err)
+		}
+		if n := worktrees(t, dir); n != 1 {
+			t.Errorf("%d worktrees after fixBuild, want the temporary one removed", n)
+		}
+	})
+
+	t.Run("no changes, no commit", func(t *testing.T) {
+		dir, _, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		fakeClaude(t, "echo 'The runner ran out of disk space.'")
+
+		var fixed bool
+		var err error
+		out := captureStdout(t, func() { fixed, err = fixBuild(prURL, sha, "main") })
+		if err != nil || fixed {
+			t.Fatalf("fixBuild() = %v, %v, want false, nil", fixed, err)
+		}
+		if !strings.Contains(out, "The runner ran out of disk space.") {
+			t.Errorf("the analysis should be shown without a fix too:\n%s", out)
+		}
+		if pushed, _ := git(bare, "rev-parse", "main"); pushed != sha {
+			t.Error("something was pushed")
+		}
+	})
+
+	t.Run("claude fails", func(t *testing.T) {
+		dir, _, sha := initRepo(t, "")
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, "")
+		fakeClaude(t, "echo half > README; exit 3")
+
+		fixed, err := fixBuild(prURL, sha, "main")
+		if err == nil || fixed {
+			t.Fatalf("fixBuild() = %v, %v, want an error", fixed, err)
+		}
+		if pushed, _ := git(bare, "rev-parse", "main"); pushed != sha {
+			t.Error("something was pushed after claude failed")
+		}
+		if n := worktrees(t, dir); n != 1 {
+			t.Errorf("%d worktrees after fixBuild, want the temporary one removed", n)
+		}
+	})
+
+	refusals := []struct {
+		name    string
+		setup   func(t *testing.T, dir string) // HEAD afterwards is the commit to fix
+		branch  string
+		wantErr string
+	}{
+		{
+			name:    "detached HEAD",
+			branch:  "HEAD",
+			wantErr: "detached",
+		},
+		{
+			name: "build of a fix",
+			setup: func(t *testing.T, dir string) {
+				git(dir, "commit", "--quiet", "--allow-empty", "-m", fixMessage, "--trailer", fixTrailer+": 0123456789abcdef")
+				git(dir, "push", "--quiet", "origin", "main")
+			},
+			branch:  "main",
+			wantErr: "already a fix",
+		},
+		{
+			name: "origin moved on",
+			setup: func(t *testing.T, dir string) {
+				git(dir, "commit", "--quiet", "--allow-empty", "-m", "newer")
+				git(dir, "push", "--quiet", "origin", "main")
+				git(dir, "reset", "--quiet", "--hard", "HEAD~1")
+			},
+			branch:  "main",
+			wantErr: "no longer at the built commit",
+		},
+		{
+			name:    "branch not on origin",
+			branch:  "feature",
+			wantErr: "no longer at the built commit",
+		},
+	}
+	for _, tt := range refusals {
+		t.Run("refuses: "+tt.name, func(t *testing.T) {
+			dir, repo, _ := initRepo(t, "")
+			t.Chdir(dir)
+			bare := bareOrigin(t, dir, "")
+			argsFile := fakeClaude(t, "touch ran")
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+			sha := headOf(t, repo)
+			pushed, _ := git(bare, "rev-parse", "main")
+
+			fixed, err := fixBuild(prURL, sha, tt.branch)
+			if err == nil || fixed || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("fixBuild() = %v, %v, want error containing %q", fixed, err, tt.wantErr)
+			}
+			if _, err := os.Stat(argsFile); err == nil {
+				t.Error("claude ran")
+			}
+			if now, _ := git(bare, "rev-parse", "main"); now != pushed {
+				t.Error("something was pushed")
+			}
+		})
+	}
+}
+
+func TestRunFix(t *testing.T) {
+	const remote = "https://github.com/mbraak/waitbuild.git"
+	const prURL = "https://github.com/mbraak/waitbuild/pull/7"
+	isolateGit(t)
+	t.Setenv("GITHUB_TOKEN", "tok")
+	failed := runsOnly(done(1, "build", "failure"))
+
+	t.Run("points claude at the pull request", func(t *testing.T) {
+		dir, repo, sha := initRepo(t, remote)
+		t.Chdir(dir)
+		bare := bareOrigin(t, dir, remote)
+		argsFile := fakeClaude(t, "echo fixed > README")
+		f := newFakeAPI(t, failed)
+		f.pulls = []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr(prURL)}}
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		captureStdout(t, func() { err = run("", "", time.Millisecond, time.Minute, time.Minute, false, true) })
+		if err == nil {
+			t.Fatal("run() = nil, want failure: the pushed build failed")
+		}
+		raw, rerr := os.ReadFile(argsFile)
+		if rerr != nil {
+			t.Fatalf("claude did not run: %v", rerr)
+		}
+		if !strings.Contains(string(raw), fixPrompt(prURL, sha)) {
+			t.Errorf("claude args lack the prompt for %s:\n%s", prURL, raw)
+		}
+		if fix := pushedFix(t, repo, bare); fixOf(t, fix) != sha {
+			t.Errorf("pushed main = %s, want a fix of %s", fix.Hash, sha)
+		}
+	})
+
+	t.Run("without a pull request claude does not run", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		argsFile := fakeClaude(t, "")
+		useFakeAPI(t, newFakeAPI(t, failed), "tok")
+
+		captureStdout(t, func() { run("", "", time.Millisecond, time.Minute, time.Minute, false, true) })
+		if _, err := os.Stat(argsFile); err == nil {
+			t.Error("claude ran without a pull request")
+		}
+	})
+
+	t.Run("a successful build is left alone", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		argsFile := fakeClaude(t, "")
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
+		f.pulls = []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr(prURL)}}
+		useFakeAPI(t, f, "tok")
+
+		captureStdout(t, func() {
+			if err := run("", "", time.Millisecond, time.Minute, time.Minute, false, true); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if _, err := os.Stat(argsFile); err == nil {
+			t.Error("claude ran for a successful build")
 		}
 	})
 }

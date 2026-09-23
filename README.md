@@ -60,14 +60,19 @@ are several) and exits with 1 when there is none.
 `-fix` hands a failed build to [Claude Code](https://claude.com/claude-code):
 it runs `claude -p` in the repository root with a prompt that points at the
 commit's pull request, lets Claude look up the failed checks and their logs
-with `gh`, and commits the changes it makes as `Fix build`. The commit is not
-pushed; push it to rebuild. A commit without a pull request is not fixed.
+with `gh`, commits the changes it makes as `Fix build` and pushes them to the
+branch. A commit without a pull request is not fixed.
+
+The fix commit carries a `Waitbuild-Fix: <sha>` trailer, and the build of such
+a commit is never fixed again. The push starts the pre-push hook, and with it
+waitbuild for the fix, so each push gets at most one attempt instead of a
+loop. Commits Claude makes by itself are folded into the one fix commit.
 
 It only runs when the built commit is still `HEAD` on the same branch and the
 working tree is clean, so that work started after the push is never swept
-into the commit. Nothing is committed when Claude fails or changes nothing; a
-commit Claude makes by itself is kept as is. The exit code stays 1, because
-the pushed build did fail.
+into the commit. Nothing is committed when Claude fails or changes nothing.
+When the push fails, the fix commit stays for you to push. The exit code stays
+1, because the pushed build did fail.
 
 Claude runs with `--permission-mode acceptEdits` and may run `gh pr view`,
 `gh pr checks`, `gh pr diff` and `gh run view` without asking. It cannot ask

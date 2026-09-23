@@ -22,7 +22,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -190,7 +189,7 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		}
 		message := fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))])
 		if fixed {
-			message += ", fix committed"
+			message += ", fix by claude pushed"
 		}
 		url := notifyURL(prURL, owner, repo, sha, checks)
 		desktopNotify(title, message, url, iconFile(ok))
@@ -203,6 +202,12 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 
 // fixMessage is the commit message for the changes Claude makes with -fix.
 const fixMessage = "Fix build"
+
+// fixTrailer marks a commit made by -fix; its value is the commit whose build
+// failed. The build of a commit with this trailer is never fixed again, so
+// pushing a fix (which starts the pre-push hook, and with it another
+// waitbuild) gives at most one attempt per push instead of a loop.
+const fixTrailer = "Waitbuild-Fix"
 
 // claudeTools are the commands Claude may run without asking while fixing a
 // build: the gh commands for reading the pull request, its checks and the
@@ -220,13 +225,14 @@ func fixPrompt(prURL, sha string) string {
 	return fmt.Sprintf("The CI build of pull request %s failed for commit %s. "+
 		"Look up the failed checks and their logs with gh (for example `gh pr checks %s` and `gh run view <run-id> --log-failed`), "+
 		"then fix the cause in this repository with the smallest change that makes the build pass. "+
-		"Do not commit or push; the changes are committed for you.", prURL, sha, prURL)
+		"Do not commit or push; the changes are committed and pushed for you.", prURL, sha, prURL)
 }
 
 // fixBuild runs Claude Code in print mode in the repository root after a
-// failed build, pointing it at the pull request, and commits the changes it
-// makes. It reports whether a commit was made, also when Claude made one
-// itself. Because waitbuild usually runs in the background after a push, it
+// failed build, pointing it at the pull request, commits the changes it makes
+// and pushes them to the branch. It reports whether a fix was committed.
+// Commits Claude makes by itself are folded into that one fix commit, so that
+// it always carries fixTrailer. Because waitbuild usually runs in the background after a push, it
 // refuses to touch the repository unless HEAD is still sha on branch and the
 // working tree is clean, so that work started in the meantime is never swept
 // into the commit.
@@ -242,8 +248,15 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 	}
 	if current, err := git(root, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
 		return false, err
+	} else if current == "HEAD" {
+		return false, errors.New("HEAD is detached, so there is no branch to push a fix to; not running claude")
 	} else if current != branch {
 		return false, fmt.Errorf("the checked out branch is now %s instead of %s; not running claude", current, branch)
+	}
+	if fixOf, err := git(root, "log", "-1", "--format=%(trailers:key="+fixTrailer+",valueonly)", sha); err != nil {
+		return false, err
+	} else if fixOf != "" {
+		return false, fmt.Errorf("%s is already a fix by claude for %s; not running claude again", sha[:min(10, len(sha))], fixOf[:min(10, len(fixOf))])
 	}
 	if status, err := git(root, "status", "--porcelain"); err != nil {
 		return false, err
@@ -254,14 +267,7 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 	printf("waitbuild: asking claude to fix %s\n", prURL)
 	// --allowedTools takes a list, so the prompt must come before it.
 	args := append([]string{"-p", fixPrompt(prURL, sha), "--permission-mode", "acceptEdits", "--allowedTools"}, claudeTools...)
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = root
-	cmd.Stdout = io.Discard
-	if !quiet {
-		cmd.Stdout = os.Stdout
-	}
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runVisible(root, "claude", args...); err != nil {
 		return false, fmt.Errorf("claude: %w", err)
 	}
 
@@ -269,29 +275,47 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	committed := head != sha // claude committed by itself
-	status, err := git(root, "status", "--porcelain")
-	if err != nil {
+	if head != sha {
+		// Claude committed by itself; keep its changes but not its commits.
+		if _, err := git(root, "reset", "--quiet", "--soft", sha); err != nil {
+			return false, err
+		}
+	}
+	if _, err := git(root, "add", "--all"); err != nil {
 		return false, err
 	}
-	if status == "" && !committed {
+	if staged, err := git(root, "status", "--porcelain"); err != nil {
+		return false, err
+	} else if staged == "" {
 		printf("waitbuild: claude made no changes, nothing to commit\n")
 		return false, nil
 	}
-	if status != "" {
-		if _, err := git(root, "add", "--all"); err != nil {
-			return false, err
-		}
-		if _, err := git(root, "commit", "--quiet", "--message", fixMessage); err != nil {
-			return false, err
-		}
+	if _, err := git(root, "commit", "--quiet", "--message", fixMessage, "--trailer", fixTrailer+": "+sha); err != nil {
+		return false, err
 	}
 	commit, err := git(root, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return false, err
 	}
-	printf("waitbuild: committed the fix by claude as %s; push to rebuild\n", commit)
+	if err := runVisible(root, "git", "push", "--quiet", "origin", branch); err != nil {
+		return false, fmt.Errorf("committed the fix by claude as %s, but pushing it failed: %w", commit, err)
+	}
+	printf("waitbuild: pushed the fix by claude as %s to %s\n", commit, branch)
 	return true, nil
+}
+
+// runVisible runs name with args in dir, with its output on the terminal (or
+// stdout discarded with -quiet). The output must not go through a pipe: git
+// push runs the pre-push hook, which starts waitbuild in the background, and
+// a pipe it inherits would keep Run waiting until that build has finished.
+func runVisible(dir, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if !quiet {
+		cmd.Stdout = os.Stdout // nil, as with -quiet, means /dev/null
+	}
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // git runs git with args in dir (the working directory when empty) and

@@ -385,7 +385,7 @@ func parseGitHubRemote(url string) (owner, repo string, err error) {
 	if m == nil {
 		return "", "", fmt.Errorf("origin %q is not a github.com remote", url)
 	}
-	return m[1], m[2], nil
+	return m[2], m[1], nil
 }
 
 func githubToken() (string, error) {

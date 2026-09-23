@@ -233,44 +233,52 @@ func fixPrompt(prURL, sha string) string {
 		"The reply becomes the body of the commit message, so write plain text without Markdown, wrapped at 72 characters.", prURL, sha, prURL)
 }
 
-// fixBuild runs Claude Code in print mode in the repository root after a
-// failed build, pointing it at the pull request, commits the changes it makes
-// and pushes them to the branch. It reports whether a fix was committed.
-// Commits Claude makes by itself are folded into that one fix commit, so that
-// it always carries fixTrailer. Because waitbuild usually runs in the background after a push, it
-// refuses to touch the repository unless HEAD is still sha on branch and the
-// working tree is clean, so that work started in the meantime is never swept
-// into the commit.
+// fixBuild runs Claude Code in print mode after a failed build, pointing it
+// at the pull request, commits the changes it makes and pushes them to the
+// branch. It reports whether a fix was pushed. Commits Claude makes by itself
+// are folded into that one fix commit, so that it always carries fixTrailer.
+//
+// Claude works in a temporary worktree of sha, never in the checkout
+// waitbuild runs in: waitbuild usually runs in the background after a push,
+// and whatever happens in the checkout meanwhile (uncommitted changes, new
+// commits, another branch) is left alone. The fix is only pushed when the
+// branch on origin is still at sha; the push is not forced, so it also fails
+// when someone pushed in between. The local branch is not updated; pull to
+// get the fix.
 func fixBuild(prURL, sha, branch string) (bool, error) {
+	if branch == "HEAD" {
+		return false, errors.New("the build is of a detached HEAD, so there is no branch to push a fix to; not running claude")
+	}
 	root, err := git("", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return false, err
-	}
-	if head, err := git(root, "rev-parse", "HEAD"); err != nil {
-		return false, err
-	} else if head != sha {
-		return false, fmt.Errorf("HEAD is now %s instead of the built commit %s; not running claude", head[:min(10, len(head))], sha[:min(10, len(sha))])
-	}
-	if current, err := git(root, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
-		return false, err
-	} else if current == "HEAD" {
-		return false, errors.New("HEAD is detached, so there is no branch to push a fix to; not running claude")
-	} else if current != branch {
-		return false, fmt.Errorf("the checked out branch is now %s instead of %s; not running claude", current, branch)
 	}
 	if fixOf, err := git(root, "log", "-1", "--format=%(trailers:key="+fixTrailer+",valueonly)", sha); err != nil {
 		return false, err
 	} else if fixOf != "" {
 		return false, fmt.Errorf("%s is already a fix by claude for %s; not running claude again", sha[:min(10, len(sha))], fixOf[:min(10, len(fixOf))])
 	}
-	if status, err := git(root, "status", "--porcelain"); err != nil {
+	if remote, err := git(root, "ls-remote", "origin", "refs/heads/"+branch); err != nil {
 		return false, err
-	} else if status != "" {
-		return false, errors.New("the working tree has uncommitted changes; not running claude")
+	} else if remoteSHA, _, _ := strings.Cut(remote, "\t"); remoteSHA != sha {
+		return false, fmt.Errorf("%s on origin is no longer at the built commit %s; not running claude", branch, sha[:min(10, len(sha))])
+	}
+
+	// Named after the repository, so that Claude sees a familiar directory.
+	tmp, err := os.MkdirTemp("", "waitbuild-fix-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(tmp)
+	dir := filepath.Join(tmp, filepath.Base(root))
+	// Registered first, so that a partly set up worktree is removed as well.
+	defer git(root, "worktree", "remove", "--force", dir)
+	if err := addWorktree(root, dir, sha); err != nil {
+		return false, err
 	}
 
 	printf("waitbuild: asking claude to analyze and fix %s\n", prURL)
-	analysis, err := runClaude(root, fixPrompt(prURL, sha))
+	analysis, err := runClaude(dir, fixPrompt(prURL, sha))
 	if err != nil {
 		return false, fmt.Errorf("claude: %w", err)
 	}
@@ -278,20 +286,20 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 		printf("waitbuild: analysis by claude:\n%s\n", analysis)
 	}
 
-	head, err := git(root, "rev-parse", "HEAD")
+	head, err := git(dir, "rev-parse", "HEAD")
 	if err != nil {
 		return false, err
 	}
 	if head != sha {
 		// Claude committed by itself; keep its changes but not its commits.
-		if _, err := git(root, "reset", "--quiet", "--soft", sha); err != nil {
+		if _, err := git(dir, "reset", "--quiet", "--soft", sha); err != nil {
 			return false, err
 		}
 	}
-	if _, err := git(root, "add", "--all"); err != nil {
+	if _, err := git(dir, "add", "--all"); err != nil {
 		return false, err
 	}
-	if staged, err := git(root, "status", "--porcelain"); err != nil {
+	if staged, err := git(dir, "status", "--porcelain"); err != nil {
 		return false, err
 	} else if staged == "" {
 		printf("waitbuild: claude made no changes, nothing to commit\n")
@@ -301,18 +309,53 @@ func fixBuild(prURL, sha, branch string) (bool, error) {
 	if analysis != "" {
 		commitArgs = append(commitArgs, "--message", analysis)
 	}
-	if _, err := git(root, append(commitArgs, "--trailer", fixTrailer+": "+sha)...); err != nil {
+	if _, err := git(dir, append(commitArgs, "--trailer", fixTrailer+": "+sha)...); err != nil {
 		return false, err
 	}
-	commit, err := git(root, "rev-parse", "--short", "HEAD")
+	commit, err := git(dir, "rev-parse", "HEAD")
 	if err != nil {
 		return false, err
 	}
-	if err := runVisible(root, "git", "push", "--quiet", "origin", branch); err != nil {
-		return false, fmt.Errorf("committed the fix by claude as %s, but pushing it failed: %w", commit, err)
+	short := commit[:min(10, len(commit))]
+
+	// Push from the checkout rather than the temporary worktree: the pre-push
+	// hook starts waitbuild for the fix in its working directory, and the
+	// worktree is removed as soon as this returns.
+	if err := runVisible(root, "git", "push", "--quiet", "origin", commit+":refs/heads/"+branch); err != nil {
+		return false, fmt.Errorf("committed the fix by claude as %s, but pushing it failed (git cherry-pick %s to use it anyway): %w", short, short, err)
 	}
-	printf("waitbuild: pushed the fix by claude as %s to %s\n", commit, branch)
+	printf("waitbuild: pushed the fix by claude as %s to %s; pull to get it\n", short, branch)
 	return true, nil
+}
+
+// addWorktree creates a worktree of sha at dir, with a detached HEAD.
+//
+// Files are only checked out once the worktree shares the git-crypt key of
+// the repository: git-crypt reads it from the git directory of the worktree
+// (.git/worktrees/<name>/git-crypt), not from the common one (.git/git-crypt)
+// where `git-crypt unlock` puts it, so its smudge filter would fail with
+// "Unable to open key file" otherwise.
+func addWorktree(root, dir, sha string) error {
+	if _, err := git(root, "worktree", "add", "--quiet", "--detach", "--no-checkout", dir, sha); err != nil {
+		return err
+	}
+	gitDir, err := git(dir, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	commonDir, err := git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if keys := filepath.Join(commonDir, "git-crypt"); gitDir != commonDir {
+		if _, err := os.Stat(keys); err == nil {
+			if err := os.Symlink(keys, filepath.Join(gitDir, "git-crypt")); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = git(dir, "reset", "--quiet", "--hard", sha)
+	return err
 }
 
 // runClaude runs Claude Code in print mode in dir with prompt and returns its

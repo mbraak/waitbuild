@@ -58,7 +58,7 @@ waitbuild -help           # all flags
 are several) and exits with 1 when there is none.
 
 `-fix` hands a failed build to [Claude Code](https://claude.com/claude-code):
-it runs `claude -p` in the repository root with a prompt that points at the
+it runs `claude -p` with a prompt that points at the
 commit's pull request, lets Claude look up the failed checks and their logs
 with `gh`, analyze why the build failed and fix it, then commits the changes as
 `Fix build` and pushes them to the branch. Claude's analysis (which checks
@@ -72,11 +72,20 @@ a commit is never fixed again. The push starts the pre-push hook, and with it
 waitbuild for the fix, so each push gets at most one attempt instead of a
 loop. Commits Claude makes by itself are folded into the one fix commit.
 
-It only runs when the built commit is still `HEAD` on the same branch and the
-working tree is clean, so that work started after the push is never swept
-into the commit. Nothing is committed when Claude fails or changes nothing.
-When the push fails, the fix commit stays for you to push. The exit code stays
-1, because the pushed build did fail.
+Claude works in a temporary worktree of the failed commit, never in your
+checkout, so uncommitted changes, later commits or another checked out branch
+don't matter and are left alone. The worktree is removed afterwards. The fix
+is only pushed when the branch on origin is still at the failed commit; the
+push is not forced, so it also fails when someone pushed in between. Your local
+branch is not updated: pull to get the fix. Nothing is committed when Claude
+fails or changes nothing. The exit code stays 1, because the pushed build did
+fail.
+
+The worktree only has what is committed: untracked files such as `.env`,
+`node_modules` or `.claude/settings.local.json` are missing there, so allow
+commands for Claude in the committed `.claude/settings.json`.
+Repositories encrypted with [git-crypt](https://github.com/AGWA/git-crypt)
+work when unlocked: the worktree shares the key of your checkout.
 
 Claude runs with `--permission-mode acceptEdits` and may run `gh pr view`,
 `gh pr checks`, `gh pr diff` and `gh run view` without asking. It cannot ask

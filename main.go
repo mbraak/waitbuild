@@ -37,7 +37,6 @@ import (
 var successConclusions = map[string]bool{
 	"success": true,
 	"skipped": true,
-	"neutral": true,
 }
 
 // actionsAppSlug is the GitHub App that creates check runs for GitHub Actions

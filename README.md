@@ -49,11 +49,14 @@ Requires a GitHub token: `GITHUB_TOKEN`, `GH_TOKEN`, or a `gh auth login` sessio
 waitbuild                 # build of HEAD
 waitbuild -sha <commit>   # build of a specific commit
 waitbuild -pr             # print the URL of the pull request for HEAD
+waitbuild -quiet -notify  # print nothing; report via notification and exit code
 waitbuild -help           # all flags
 ```
 
 `-pr` prints the pull request that contains the commit (an open one when there
 are several) and exits with 1 when there is none.
+
+`-quiet` suppresses all output on stdout; errors are still written to stderr.
 
 Exit code 0 when every check succeeded (or was skipped), 1 otherwise. A commit
 status in state `failure` or `error` counts as a failed check.

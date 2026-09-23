@@ -859,6 +859,27 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("quiet prints nothing", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t,
+			&poll{runs: []*github.WorkflowRun{mkRun(1, "build", "in_progress", "")}},
+			&poll{runs: []*github.WorkflowRun{done(1, "build", "failure")}},
+		)
+		useFakeAPI(t, f, "tok")
+		quiet = true
+		t.Cleanup(func() { quiet = false })
+
+		var err error
+		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		if err == nil {
+			t.Fatal("run() = nil, want failure: -quiet must not change the exit status")
+		}
+		if out != "" {
+			t.Errorf("output with -quiet = %q, want nothing", out)
+		}
+	})
+
 	t.Run("repository without workflows waits for statuses", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)

@@ -55,6 +55,19 @@ type check struct {
 	url        string
 }
 
+// quiet suppresses the progress and result output on stdout (-quiet). Errors
+// are still written to stderr and the exit code is unaffected.
+var quiet bool
+
+// printf writes progress output to stdout unless -quiet was given. It looks
+// up os.Stdout on every call so that tests can redirect it.
+func printf(format string, args ...any) {
+	if quiet {
+		return
+	}
+	fmt.Fprintf(os.Stdout, format, args...)
+}
+
 func (c check) done() bool { return c.status == "completed" }
 func (c check) ok() bool   { return successConclusions[c.conclusion] }
 
@@ -75,6 +88,7 @@ func main() {
 	notify := flag.Bool("notify", false, "show a desktop notification (macOS) when the build finishes")
 	testNotify := flag.Bool("test-notify", false, "send a test desktop notification and exit")
 	printPR := flag.Bool("pr", false, "print the URL of the pull request for the commit and exit")
+	flag.BoolVar(&quiet, "quiet", false, "print nothing to the console; only the exit code (and -notify) report the result")
 	flag.Parse()
 
 	if *printPR {
@@ -130,9 +144,9 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 	if err != nil {
 		return err
 	}
-	fmt.Printf("waitbuild: waiting for the build of %s (%s) in %s/%s\n", branch, sha[:min(10, len(sha))], owner, repo)
+	printf("waitbuild: waiting for the build of %s (%s) in %s/%s\n", branch, sha[:min(10, len(sha))], owner, repo)
 	if !hasWorkflows {
-		fmt.Printf("waitbuild: %s/%s has no GitHub Actions workflows, waiting for commit statuses and check runs only\n", owner, repo)
+		printf("waitbuild: %s/%s has no GitHub Actions workflows, waiting for commit statuses and check runs only\n", owner, repo)
 	}
 
 	checks, err := waitForChecks(ctx, client, owner, repo, sha, interval, appearTimeout, hasWorkflows)
@@ -142,14 +156,14 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 
 	ok := true
 	width := nameWidth(checks)
-	fmt.Printf("waitbuild: build of %s finished\n", branch)
+	printf("waitbuild: build of %s finished\n", branch)
 	for _, c := range checks {
 		mark := "✔"
 		if !c.ok() {
 			mark = "✘"
 			ok = false
 		}
-		fmt.Printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
+		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
 	if notify {
@@ -229,7 +243,7 @@ func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha 
 			}
 			if state := c.state(); seen[c.key] != state {
 				seen[c.key] = state
-				fmt.Printf("  %-*s %s\n", width, c.name, state)
+				printf("  %-*s %s\n", width, c.name, state)
 			}
 		}
 

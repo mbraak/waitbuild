@@ -23,6 +23,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/go-github/v90/github"
+	"github.com/mbraak/waitbuild/internal/watch"
 )
 
 // --- parseGitHubRemote -----------------------------------------------------
@@ -641,7 +642,7 @@ func TestWaitForChecks(t *testing.T) {
 	const interval = time.Millisecond
 	const appear = time.Minute
 	wait := func(f *fakeAPI, ctx context.Context, appear time.Duration) ([]check, error) {
-		return waitForChecks(ctx, f.client(t), "o", "r", "sha", interval, appear, true)
+		return waitForChecks(ctx, f.client(t), "o", "r", "sha", interval, appear, true, nil)
 	}
 
 	t.Run("waits for runs to appear and complete, settling twice", func(t *testing.T) {
@@ -749,7 +750,7 @@ func TestWaitForChecks(t *testing.T) {
 
 	t.Run("gives up when no check appears", func(t *testing.T) {
 		f := newFakeAPI(t, &poll{})
-		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, true)
+		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, true, nil)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -763,7 +764,7 @@ func TestWaitForChecks(t *testing.T) {
 
 	t.Run("mentions the missing workflows when nothing appears", func(t *testing.T) {
 		f := newFakeAPI(t, &poll{})
-		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, false)
+		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, false, nil)
 		if err == nil || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
 			t.Fatalf("error = %v, want a hint about missing workflows", err)
 		}
@@ -828,7 +829,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		out := captureStdout(t, func() {
-			if err := run("", "", interval, time.Minute, time.Minute, true); err != nil {
+			if err := run("", "", "", false, interval, time.Minute, time.Minute, true); err != nil {
 				t.Errorf("run() = %v, want nil", err)
 			}
 		})
@@ -871,7 +872,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(func() { quiet = false })
 
 		var err error
-		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		out := captureStdout(t, func() { err = run("", "", "", false, interval, time.Minute, time.Minute, false) })
 		if err == nil {
 			t.Fatal("run() = nil, want failure: -quiet must not change the exit status")
 		}
@@ -891,7 +892,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		out := captureStdout(t, func() {
-			if err := run("", "", interval, time.Minute, time.Minute, false); err != nil {
+			if err := run("", "", "", false, interval, time.Minute, time.Minute, false); err != nil {
 				t.Errorf("run() = %v, want nil", err)
 			}
 		})
@@ -910,7 +911,7 @@ func TestRun(t *testing.T) {
 		f.noWorkflows = true
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, 20*time.Millisecond, time.Minute, false)
+		err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "no checks appeared") || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
 			t.Fatalf("run() = %v, want no-checks error mentioning the missing workflows", err)
 		}
@@ -922,7 +923,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success"), done(2, "test", "failure")))
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", "", false, interval, time.Minute, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "did not succeed") {
 			t.Fatalf("run() = %v, want failure", err)
 		}
@@ -938,7 +939,7 @@ func TestRun(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		var err error
-		out := captureStdout(t, func() { err = run("", "", interval, time.Minute, time.Minute, false) })
+		out := captureStdout(t, func() { err = run("", "", "", false, interval, time.Minute, time.Minute, false) })
 		if err == nil || !strings.Contains(err.Error(), "did not succeed") {
 			t.Fatalf("run() = %v, want failure", err)
 		}
@@ -952,7 +953,7 @@ func TestRun(t *testing.T) {
 		t.Chdir(dir)
 		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: build", "error")}})
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", "", false, interval, time.Minute, time.Minute, false); err == nil {
 			t.Fatal("run() = nil, want failure for errored status")
 		}
 	})
@@ -965,7 +966,7 @@ func TestRun(t *testing.T) {
 			checkRuns: []*github.CheckRun{mkCheckRun(2, "SonarCloud", "sonarqubecloud", "completed", "failure")},
 		})
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", "", false, interval, time.Minute, time.Minute, false); err == nil {
 			t.Fatal("run() = nil, want failure for failed check run")
 		}
 	})
@@ -975,7 +976,7 @@ func TestRun(t *testing.T) {
 		t.Chdir(dir)
 		f := newFakeAPI(t, runsOnly(done(1, "build", "cancelled")))
 		useFakeAPI(t, f, "tok")
-		if err := run("", "", interval, time.Minute, time.Minute, false); err == nil {
+		if err := run("", "", "", false, interval, time.Minute, time.Minute, false); err == nil {
 			t.Fatal("run() = nil, want failure for cancelled run")
 		}
 	})
@@ -986,7 +987,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
-		if err := run("0123456789abcdef", "feature", interval, time.Minute, time.Minute, false); err != nil {
+		if err := run("0123456789abcdef", "feature", "", false, interval, time.Minute, time.Minute, false); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.request("/actions/runs").URL.Query().Get("head_sha"); got != "0123456789abcdef" {
@@ -997,13 +998,97 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("-repo needs no git repository", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
+		useFakeAPI(t, f, "tok")
+
+		if err := run("0123456789abcdef", "feature", "o/r", false, interval, time.Minute, time.Minute, false); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.request("/status").URL.Path; got != "/repos/o/r/commits/0123456789abcdef/status" {
+			t.Errorf("status path = %q, want the -repo flag", got)
+		}
+	})
+
+	t.Run("-repo validation", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		for _, tc := range []struct{ sha, repo, want string }{
+			{"abc", "o", "not of the form owner/repo"},
+			{"abc", "o/r/x", "not of the form owner/repo"},
+			{"abc", "/r", "not of the form owner/repo"},
+			{"", "o/r", "requires -sha"},
+		} {
+			err := run(tc.sha, "", tc.repo, false, interval, time.Minute, time.Minute, false)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("run(sha %q, repo %q) = %v, want error containing %q", tc.sha, tc.repo, err, tc.want)
+			}
+		}
+	})
+
+	t.Run("-if-rerun skips a build that still failed", func(t *testing.T) {
+		state := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", state)
+		f := newFakeAPI(t, runsOnly(done(1, "build", "failure")))
+		useFakeAPI(t, f, "tok")
+
+		out := captureStdout(t, func() {
+			if err := run("abc", "main", "o/r", true, interval, time.Minute, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil for a build that is not running", err)
+			}
+		})
+		if out != "" {
+			t.Errorf("output = %q, want nothing", out)
+		}
+		if n := f.pollCount(); n != 1 {
+			t.Errorf("polled %d times, want 1", n)
+		}
+		if watches, _ := watch.Load(state); len(watches) != 0 {
+			t.Errorf("recorded %+v, want nothing: the existing result must stay", watches)
+		}
+	})
+
+	t.Run("-if-rerun waits for a rerun build", func(t *testing.T) {
+		f := newFakeAPI(t,
+			runsOnly(mkRun(1, "build", "queued", "")),
+			runsOnly(mkRun(1, "build", "in_progress", "")),
+			runsOnly(done(1, "build", "success")),
+		)
+		useFakeAPI(t, f, "tok")
+
+		captureStdout(t, func() {
+			if err := run("abc", "main", "o/r", true, interval, time.Minute, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if n := f.pollCount(); n < 3 {
+			t.Errorf("polled %d times, want at least 3", n)
+		}
+	})
+
+	t.Run("-if-rerun records a rerun that already succeeded", func(t *testing.T) {
+		state := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", state)
+		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "success")}})
+		useFakeAPI(t, f, "tok")
+
+		captureStdout(t, func() {
+			if err := run("abc", "main", "o/r", true, interval, time.Minute, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if w := loadOnly(t, state); w.State() != watch.Success {
+			t.Errorf("recorded state %s, want success", w.State())
+		}
+	})
+
 	t.Run("non-github remote", func(t *testing.T) {
 		dir, _, _ := initRepo(t, "https://gitlab.com/mbraak/waitbuild.git")
 		t.Chdir(dir)
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", "", false, interval, time.Minute, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "not a github.com remote") {
 			t.Fatalf("run() = %v, want remote error", err)
 		}
@@ -1019,7 +1104,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
 		useFakeAPI(t, f, "")
 
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", "", false, interval, time.Minute, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "no GitHub token") {
 			t.Fatalf("run() = %v, want token error", err)
 		}
@@ -1031,7 +1116,7 @@ func TestRun(t *testing.T) {
 		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "pending")}})
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", interval, time.Minute, 30*time.Millisecond, false)
+		err := run("", "", "", false, interval, time.Minute, 30*time.Millisecond, false)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("run() = %v, want deadline exceeded", err)
 		}
@@ -1039,7 +1124,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("outside a repository", func(t *testing.T) {
 		t.Chdir(t.TempDir())
-		err := run("", "", interval, time.Minute, time.Minute, false)
+		err := run("", "", "", false, interval, time.Minute, time.Minute, false)
 		if err == nil || !strings.Contains(err.Error(), "opening git repository") {
 			t.Fatalf("run() = %v, want repository error", err)
 		}

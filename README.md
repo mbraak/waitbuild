@@ -65,6 +65,68 @@ A repository without GitHub Actions workflows is fine: waitbuild then waits for
 commit statuses and check runs only. When nothing at all is reported within
 `-appear-timeout` (3 minutes by default) it gives up.
 
+## Menu bar app
+
+`waitbuild-menubar` shows the builds waitbuild is waiting for in the macOS menu
+bar: ⏳ with the number of running builds, or ✅ / ❌ for the most recent
+result. Each build has a submenu with its checks, and clicking a check opens
+it on GitHub. Finished builds stay listed until you dismiss them, use
+"Clear finished", or they are older than `-keep` (24 hours by default).
+
+Every waitbuild process records its build in a JSON file in
+`~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).
+The menu bar app reads these files, so it shows builds started from any
+terminal or git hook, and builds started before the app was launched.
+
+A build that failed can be rerun on GitHub. Once a minute (`-rerun-interval`)
+the app runs `waitbuild -if-rerun` for every build that failed, gave up or
+was stopped. That call exits right away while the build is unchanged. When a
+check is queued or running again, or every check now succeeds because the
+rerun already finished, it waits for the build like any other waitbuild
+process: the menu shows the new result and you get a notification. The app looks for `waitbuild` next to its own
+binary, then on `PATH` (override with `-waitbuild`). The app itself makes no
+GitHub API calls.
+
+```sh
+cd ~/waitbuild && go build -o ~/.local/bin/waitbuild-menubar ./cmd/waitbuild-menubar
+waitbuild-menubar &
+```
+
+To start it at login, install a LaunchAgent. This writes the plist with your
+home directory filled in and loads it:
+
+```sh
+cat > ~/Library/LaunchAgents/com.github.mbraak.waitbuild-menubar.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.github.mbraak.waitbuild-menubar</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOME/.local/bin/waitbuild-menubar</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- lets waitbuild find gh for the GitHub token when checking for reruns -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.mbraak.waitbuild-menubar.plist
+```
+
+Check that it is running with
+`launchctl print gui/$(id -u)/com.github.mbraak.waitbuild-menubar`. After
+changing the plist, run
+`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.github.mbraak.waitbuild-menubar.plist`
+and bootstrap it again.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

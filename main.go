@@ -10,6 +10,9 @@
 //	waitbuild -sha <sha> # waits for the build of a specific commit
 //	waitbuild -pr        # prints the URL of the pull request for HEAD
 //
+// The waitbuild-menubar app runs it with -repo, -sha and -if-rerun to pick up
+// builds that were rerun on GitHub after waitbuild reported them.
+//
 // Authentication: GITHUB_TOKEN or GH_TOKEN, falling back to `gh auth token`.
 package main
 
@@ -82,6 +85,8 @@ func (c check) state() string {
 func main() {
 	sha := flag.String("sha", "", "commit to wait for (default: HEAD)")
 	branch := flag.String("branch", "", "branch name, for display only (default: current branch)")
+	repo := flag.String("repo", "", "`owner/repo` on GitHub, instead of the origin remote of the current repository; requires -sha")
+	ifRerun := flag.Bool("if-rerun", false, "exit right away, without recording or reporting anything, unless the build looks rerun: a check is queued or in progress, or every check now succeeds (used by waitbuild-menubar on builds that did not succeed)")
 	interval := flag.Duration("interval", 10*time.Second, "poll interval")
 	appearTimeout := flag.Duration("appear-timeout", 3*time.Minute, "how long to wait for the first check to show up")
 	timeout := flag.Duration("timeout", 45*time.Minute, "overall timeout")
@@ -107,26 +112,44 @@ func main() {
 		return
 	}
 
-	if err := run(*sha, *branch, *interval, *appearTimeout, *timeout, *notify); err != nil {
+	if err := run(*sha, *branch, *repo, *ifRerun, *interval, *appearTimeout, *timeout, *notify); err != nil {
 		fmt.Fprintln(os.Stderr, "waitbuild:", err)
 		os.Exit(1)
 	}
 }
 
-func run(sha, branch string, interval, appearTimeout, timeout time.Duration, notify bool) error {
-	info, err := repoInfo()
-	if err != nil {
-		return err
-	}
-	if sha == "" {
-		sha = info.sha
-	}
-	if branch == "" {
-		branch = info.branch
-	}
-	owner, repo, err := parseGitHubRemote(info.remote)
-	if err != nil {
-		return err
+// run waits for the build of sha in repo ("owner/repo"). An empty sha, branch
+// or repo is taken from the git repository in the working directory. With
+// ifRerun, it returns nil without doing anything unless the build looks
+// rerun (see rerunLikely).
+func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeout time.Duration, notify bool) error {
+	var owner string
+	if repo != "" {
+		full := repo
+		var ok bool
+		if owner, repo, ok = strings.Cut(full, "/"); !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+			return fmt.Errorf("-repo %q is not of the form owner/repo", full)
+		}
+		if sha == "" {
+			return errors.New("-repo requires -sha")
+		}
+		if branch == "" {
+			branch = sha[:min(10, len(sha))]
+		}
+	} else {
+		info, err := repoInfo()
+		if err != nil {
+			return err
+		}
+		if sha == "" {
+			sha = info.sha
+		}
+		if branch == "" {
+			branch = info.branch
+		}
+		if owner, repo, err = parseGitHubRemote(info.remote); err != nil {
+			return err
+		}
 	}
 	token, err := githubToken()
 	if err != nil {
@@ -140,6 +163,16 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
 
+	if ifRerun {
+		checks, err := listChecks(ctx, client, owner, repo, sha)
+		if err != nil {
+			return err
+		}
+		if !rerunLikely(checks) {
+			return nil
+		}
+	}
+
 	hasWorkflows, err := hasActionsWorkflows(ctx, client, owner, repo)
 	if err != nil {
 		return err
@@ -149,8 +182,10 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		printf("waitbuild: %s/%s has no GitHub Actions workflows, waiting for commit statuses and check runs only\n", owner, repo)
 	}
 
-	checks, err := waitForChecks(ctx, client, owner, repo, sha, interval, appearTimeout, hasWorkflows)
+	rec := newRecorder(owner, repo, branch, sha)
+	checks, err := waitForChecks(ctx, client, owner, repo, sha, interval, appearTimeout, hasWorkflows, rec.update)
 	if err != nil {
+		rec.fail(err)
 		return err
 	}
 
@@ -166,18 +201,34 @@ func run(sha, branch string, interval, appearTimeout, timeout time.Duration, not
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
+	url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
+	rec.finish(ok, url)
 	if notify {
 		title := fmt.Sprintf("Build of %s succeeded", branch)
 		if !ok {
 			title = fmt.Sprintf("Build of %s FAILED", branch)
 		}
-		url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
 		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(ok))
 	}
 	if !ok {
 		return errors.New("one or more checks did not succeed")
 	}
 	return nil
+}
+
+// rerunLikely reports whether the checks of a build that did not succeed
+// show that it was rerun: a check is running again, or the rerun already
+// finished and every check now succeeds.
+func rerunLikely(checks []check) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if !c.done() || !c.ok() {
+			return !c.done()
+		}
+	}
+	return true
 }
 
 // nameWidth returns the column width for check names, so that long commit
@@ -212,8 +263,9 @@ func hasActionsWorkflows(ctx context.Context, client *github.Client, owner, repo
 // waitForChecks polls until at least one check exists for sha and every check
 // has completed. Because several workflows and services report on the same
 // push and can register a few seconds apart, "all completed" has to hold for
-// two consecutive polls before the result is accepted.
-func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool) ([]check, error) {
+// two consecutive polls before the result is accepted. onPoll, when not nil,
+// receives the checks after every poll.
+func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool, onPoll func([]check)) ([]check, error) {
 	start := time.Now()
 	seen := map[string]string{} // check key -> last reported state
 	settledOnce := false
@@ -223,6 +275,9 @@ func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha 
 		checks, err := listChecks(ctx, client, owner, repo, sha)
 		if err != nil {
 			return nil, err
+		}
+		if onPoll != nil {
+			onPoll(checks)
 		}
 
 		if len(checks) == 0 && time.Since(start) > appearTimeout {

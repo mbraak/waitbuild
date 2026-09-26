@@ -57,7 +57,7 @@ func findWaitbuild() (string, error) {
 	return exec.LookPath("waitbuild")
 }
 
-func watchKey(w watch.Watch) string { return w.Owner + "/" + w.Repo + "@" + w.SHA }
+func watchKey(w watch.Watch) string { return repoKey(w) + "@" + w.SHA }
 
 // rerunnable reports whether w is worth checking for a rerun: it finished
 // without success, or waitbuild stopped before it finished.
@@ -69,21 +69,33 @@ func rerunnable(w watch.Watch) bool {
 	return false
 }
 
+// repoKey identifies the repository of w.
+func repoKey(w watch.Watch) string { return w.Owner + "/" + w.Repo }
+
 // check starts a rerun check for every rerunnable watch that was not checked
-// within the interval. done is called after each check.
+// within the interval. A build is not checked when a newer build of the same
+// repository was started: that one supersedes it. done is called after each
+// check.
 func (r *rerunWatcher) check(watches []watch.Watch, now time.Time, done func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	newest := map[string]time.Time{} // repo key -> start of its newest build
+	for _, w := range watches {
+		if k := repoKey(w); w.Started.After(newest[k]) {
+			newest[k] = w.Started
+		}
+	}
 
 	current := map[string]bool{}
 	for _, w := range watches {
 		key := watchKey(w)
 		current[key] = true
-		if !rerunnable(w) || r.active[key] || now.Sub(r.checked[key]) < r.interval {
+		if !rerunnable(w) || newest[repoKey(w)].After(w.Started) || r.active[key] || now.Sub(r.checked[key]) < r.interval {
 			continue
 		}
 		args := []string{"-quiet", "-notify", "-if-rerun",
-			"-repo", w.Owner + "/" + w.Repo, "-sha", w.SHA, "-branch", w.Branch}
+			"-repo", repoKey(w), "-sha", w.SHA, "-branch", w.Branch}
 		wait, err := r.start(args)
 		r.checked[key] = now
 		if err != nil {

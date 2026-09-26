@@ -44,12 +44,19 @@ func (f *fakeStarts) count() int {
 func TestRerunWatcherChecksBuildsThatDidNotSucceed(t *testing.T) {
 	var f fakeStarts
 	r := f.watcher(time.Minute)
+	// Each build in its own repository, so that none supersedes another.
 	failed := finished("aaa", false, now)
 	errored := finished("bbb", false, now)
+	errored.Repo = "r2"
 	errored.Error = "timeout"
 	stopped := running("ccc", now)
+	stopped.Repo = "r3"
 	stopped.PID = 0
-	watches := []watch.Watch{failed, errored, stopped, finished("ddd", true, now), running("eee", now)}
+	succeeded := finished("ddd", true, now)
+	succeeded.Repo = "r4"
+	busy := running("eee", now)
+	busy.Repo = "r5"
+	watches := []watch.Watch{failed, errored, stopped, succeeded, busy}
 
 	r.check(watches, now, func() {})
 	if f.count() != 3 {
@@ -58,6 +65,29 @@ func TestRerunWatcherChecksBuildsThatDidNotSucceed(t *testing.T) {
 	want := []string{"-quiet", "-notify", "-if-rerun", "-repo", "o/r", "-sha", "aaa", "-branch", "feature"}
 	if !reflect.DeepEqual(f.args[0], want) {
 		t.Errorf("args = %v, want %v", f.args[0], want)
+	}
+}
+
+func TestRerunWatcherSkipsSupersededBuilds(t *testing.T) {
+	var f fakeStarts
+	r := f.watcher(time.Minute)
+	older := finished("aaa", false, now.Add(-time.Hour))
+	newer := finished("bbb", false, now)
+	otherRepo := finished("ccc", false, now.Add(-time.Hour))
+	otherRepo.Repo = "other"
+	// A newer build supersedes an older one whatever its state.
+	olderThanRunning := finished("ddd", false, now.Add(-time.Hour))
+	olderThanRunning.Repo = "busy"
+	busy := running("eee", now)
+	busy.Repo = "busy"
+
+	r.check([]watch.Watch{newer, older, otherRepo, busy, olderThanRunning}, now, func() {})
+	var shas []string
+	for _, args := range f.args {
+		shas = append(shas, args[6])
+	}
+	if want := []string{"bbb", "ccc"}; !reflect.DeepEqual(shas, want) {
+		t.Errorf("checked %v, want %v", shas, want)
 	}
 }
 

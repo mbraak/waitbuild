@@ -127,10 +127,12 @@ func TestSelectionSurvivesReload(t *testing.T) {
 
 func TestDismissAndClear(t *testing.T) {
 	dir := t.TempDir()
+	// Distinct times, so that the builds are listed in this order.
+	t0 := time.Now()
 	watches := []watch.Watch{
-		running("aaaaaaaaaa", time.Now()),
-		finished("bbbbbbbbbb", true, time.Now()),
-		finished("cccccccccc", false, time.Now()),
+		running("aaaaaaaaaa", t0),
+		finished("bbbbbbbbbb", true, t0.Add(-time.Minute)),
+		finished("cccccccccc", false, t0.Add(-2*time.Minute)),
 	}
 	for _, w := range watches {
 		if err := watch.Save(dir, w); err != nil {

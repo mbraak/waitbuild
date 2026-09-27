@@ -127,6 +127,27 @@ changing the plist, run
 `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.github.mbraak.waitbuild-menubar.plist`
 and bootstrap it again.
 
+## Terminal UI
+
+`waitbuild-tui` shows the same builds as the menu bar app, in the terminal. It
+reads the same watch files, so it works alongside the menu bar app or instead
+of it, and on systems without a menu bar.
+
+```sh
+cd ~/waitbuild && go build -o ~/.local/bin/waitbuild-tui ./cmd/waitbuild-tui
+waitbuild-tui
+```
+
+Running builds are expanded to show their checks. Keys: ↑/↓ (or j/k) to move,
+enter to expand a build or open a check on GitHub, ←/→ to collapse or expand,
+`o` to open the selected build or check, `d` to dismiss a finished build, `c`
+to clear every finished build, `q` to quit. Finished builds older than `-keep`
+(24 hours by default) are removed, as in the menu bar app.
+
+Unlike the menu bar app it does not check failed builds for a rerun on GitHub,
+so it makes no GitHub API calls and starts no waitbuild processes. A rerun
+shows up only when a waitbuild process watches it, for example after a push.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

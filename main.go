@@ -74,6 +74,10 @@ func printf(format string, args ...any) {
 func (c check) done() bool { return c.status == "completed" }
 func (c check) ok() bool   { return successConclusions[c.conclusion] }
 
+// cancelled reports whether the check was cancelled, for example because a
+// newer push superseded it.
+func (c check) cancelled() bool { return c.conclusion == "cancelled" }
+
 // state describes the check for the progress output.
 func (c check) state() string {
 	if c.done() {
@@ -189,14 +193,18 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		return err
 	}
 
-	ok := true
+	ok, failed := true, false
 	width := nameWidth(checks)
 	printf("waitbuild: build of %s finished\n", branch)
 	for _, c := range checks {
 		mark := "✔"
-		if !c.ok() {
-			mark = "✘"
+		switch {
+		case c.cancelled():
+			mark = "⊘"
 			ok = false
+		case !c.ok():
+			mark = "✘"
+			ok, failed = false, true
 		}
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
@@ -204,14 +212,20 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
 	rec.finish(ok, url)
 	if notify {
-		title := fmt.Sprintf("Build of %s succeeded", branch)
-		if !ok {
-			title = fmt.Sprintf("Build of %s FAILED", branch)
+		title, icon := fmt.Sprintf("Build of %s succeeded", branch), iconSuccess
+		switch {
+		case failed:
+			title, icon = fmt.Sprintf("Build of %s FAILED", branch), iconFailure
+		case !ok:
+			title, icon = fmt.Sprintf("Build of %s was cancelled", branch), iconCancelled
 		}
-		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(ok))
+		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(icon))
 	}
-	if !ok {
+	switch {
+	case failed:
 		return errors.New("one or more checks did not succeed")
+	case !ok:
+		return errors.New("one or more checks were cancelled")
 	}
 	return nil
 }
@@ -404,6 +418,9 @@ func listCheckRuns(ctx context.Context, client *github.Client, owner, repo, sha 
 // example "ci/circleci: lint"). The combined status endpoint already reduces
 // each context to its latest status. A status is "completed" unless pending,
 // and its state (success, failure or error) doubles as the conclusion.
+// Commit statuses have no cancelled state: CircleCI reports a canceled job as
+// an error described as "Your CircleCI tests were canceled", so such a status
+// gets the "cancelled" conclusion that check runs and workflow runs use.
 func listStatuses(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
 	var all []check
 	opts := &github.ListOptions{PerPage: 100}
@@ -422,6 +439,9 @@ func listStatuses(ctx context.Context, client *github.Client, owner, repo, sha s
 			if s.GetState() != "pending" {
 				c.status = "completed"
 				c.conclusion = s.GetState()
+				if c.conclusion == "error" && canceledRE.MatchString(s.GetDescription()) {
+					c.conclusion = "cancelled"
+				}
 			}
 			all = append(all, c)
 		}
@@ -432,6 +452,9 @@ func listStatuses(ctx context.Context, client *github.Client, owner, repo, sha s
 	}
 	return all, nil
 }
+
+// canceledRE matches the description of a commit status for a canceled job.
+var canceledRE = regexp.MustCompile(`(?i)\bcancell?ed\b`)
 
 var remoteRE = regexp.MustCompile(`github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
 
@@ -568,7 +591,7 @@ func notifyURL(prURL, owner, repo, sha string, checks []check) string {
 // reports which tool delivered it, so the setup can be checked without a push.
 func testNotification() error {
 	url := "https://github.com/mbraak/waitbuild"
-	switch desktopNotify("waitbuild test", "Click to open GitHub", url, iconFile(true)) {
+	switch desktopNotify("waitbuild test", "Click to open GitHub", url, iconFile(iconSuccess)) {
 	case "terminal-notifier":
 		fmt.Println("waitbuild: notification sent via terminal-notifier; clicking it opens", url)
 	case "osascript":
@@ -608,20 +631,26 @@ func desktopNotify(title, message, url, icon string) string {
 	return "osascript"
 }
 
-// iconFile returns the path of the notification icon for a successful (green
-// check mark) or failed (red cross) build, rendering it into the user's cache
-// directory the first time. It returns "" when the icon cannot be written, in
-// which case the notification is shown without an image.
-func iconFile(ok bool) string {
+// icon is the kind of notification icon; its value is the icon's file name
+// without extension.
+type icon string
+
+const (
+	iconSuccess   icon = "success"   // green with a check mark
+	iconFailure   icon = "failure"   // red with a cross
+	iconCancelled icon = "cancelled" // grey with a slashed circle
+)
+
+// iconFile returns the path of the notification icon of the given kind,
+// rendering it into the user's cache directory the first time. It returns ""
+// when the icon cannot be written, in which case the notification is shown
+// without an image.
+func iconFile(kind icon) string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	name := "failure.png"
-	if ok {
-		name = "success.png"
-	}
-	path := filepath.Join(dir, "waitbuild", name)
+	path := filepath.Join(dir, "waitbuild", string(kind)+".png")
 	if _, err := os.Stat(path); err == nil {
 		return path
 	}
@@ -632,7 +661,7 @@ func iconFile(ok bool) string {
 	if err != nil {
 		return ""
 	}
-	if err := png.Encode(f, drawIcon(ok)); err != nil {
+	if err := png.Encode(f, drawIcon(kind)); err != nil {
 		f.Close()
 		os.Remove(path)
 		return ""
@@ -644,23 +673,33 @@ func iconFile(ok bool) string {
 	return path
 }
 
-// drawIcon renders a filled circle, green with a white check mark for ok and
-// red with a white cross otherwise.
-func drawIcon(ok bool) *image.RGBA {
-	const size = 128
-	fill := color.RGBA{0xcf, 0x22, 0x2e, 0xff} // red
-	var strokes [][4]float64
-	if ok {
-		fill = color.RGBA{0x2d, 0xa4, 0x4e, 0xff} // green
-		strokes = [][4]float64{{34, 66, 56, 88}, {56, 88, 96, 44}}
-	} else {
-		strokes = [][4]float64{{42, 42, 86, 86}, {86, 42, 42, 86}}
-	}
+// drawIcon renders a filled circle with a white mark: green with a check mark
+// for success, red with a cross for failure and grey with a slashed circle
+// (like ⊘) for cancelled.
+func drawIcon(kind icon) *image.RGBA {
 	const (
+		size   = 128
 		center = size / 2.0
 		radius = size/2.0 - 2
 		stroke = 7.0 // half the line width
 	)
+	var (
+		fill    color.RGBA
+		strokes [][4]float64
+		ring    float64 // radius of a white ring inside the disc, 0 for none
+	)
+	switch kind {
+	case iconSuccess:
+		fill = color.RGBA{0x2d, 0xa4, 0x4e, 0xff} // green
+		strokes = [][4]float64{{34, 66, 56, 88}, {56, 88, 96, 44}}
+	case iconCancelled:
+		fill = color.RGBA{0x6e, 0x77, 0x81, 0xff} // grey
+		ring = 32
+		strokes = [][4]float64{{41, 87, 87, 41}}
+	default:
+		fill = color.RGBA{0xcf, 0x22, 0x2e, 0xff} // red
+		strokes = [][4]float64{{42, 42, 86, 86}, {86, 42, 42, 86}}
+	}
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
@@ -672,6 +711,9 @@ func drawIcon(ok bool) *image.RGBA {
 				continue
 			}
 			mark := 0.0
+			if ring > 0 {
+				mark = cover(math.Abs(math.Hypot(px-center, py-center)-ring) - stroke)
+			}
 			for _, s := range strokes {
 				mark = math.Max(mark, cover(distToSegment(px, py, s)-stroke))
 			}

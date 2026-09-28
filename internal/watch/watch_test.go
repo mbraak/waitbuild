@@ -76,6 +76,14 @@ func TestState(t *testing.T) {
 		{"succeeded", Watch{PID: 7, Finished: true, OK: true}, Success},
 		{"failed", Watch{PID: 42, Finished: true}, Failure},
 		{"gave up", Watch{PID: 7, Finished: true, Error: "timeout"}, Error},
+		{"cancelled", Watch{PID: 7, Finished: true, Checks: []Check{
+			{Status: "completed", Conclusion: "success"},
+			{Status: "completed", Conclusion: "cancelled"},
+		}}, Cancelled},
+		{"failed and cancelled", Watch{PID: 7, Finished: true, Checks: []Check{
+			{Status: "completed", Conclusion: "failure"},
+			{Status: "completed", Conclusion: "cancelled"},
+		}}, Failure},
 	}
 	for _, tt := range tests {
 		if got := tt.w.State(); got != tt.want {

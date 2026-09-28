@@ -40,6 +40,10 @@ func (c Check) OK() bool {
 	return false
 }
 
+// Cancelled reports whether the check was cancelled, for example because a
+// newer push superseded it.
+func (c Check) Cancelled() bool { return c.Conclusion == "cancelled" }
+
 // Watch is the state of one waitbuild process waiting for a commit's build.
 type Watch struct {
 	PID      int       `json:"pid"`
@@ -60,11 +64,12 @@ type Watch struct {
 type State string
 
 const (
-	Running State = "running" // waitbuild is still polling
-	Success State = "success" // every check succeeded
-	Failure State = "failure" // at least one check failed
-	Error   State = "error"   // waitbuild gave up (timeout, no checks, API error)
-	Stopped State = "stopped" // waitbuild exited without recording a result
+	Running   State = "running"   // waitbuild is still polling
+	Success   State = "success"   // every check succeeded
+	Failure   State = "failure"   // at least one check failed
+	Cancelled State = "cancelled" // no check failed, but at least one was cancelled
+	Error     State = "error"     // waitbuild gave up (timeout, no checks, API error)
+	Stopped   State = "stopped"   // waitbuild exited without recording a result
 )
 
 // State returns the display state of w. An unfinished watch whose process no
@@ -79,9 +84,25 @@ func (w Watch) State() State {
 		return Error
 	case w.OK:
 		return Success
+	case w.cancelled():
+		return Cancelled
 	default:
 		return Failure
 	}
+}
+
+// cancelled reports whether every check that did not succeed was cancelled.
+func (w Watch) cancelled() bool {
+	found := false
+	for _, c := range w.Checks {
+		switch {
+		case c.Cancelled():
+			found = true
+		case !c.OK():
+			return false
+		}
+	}
+	return found
 }
 
 // ShortSHA returns the first 7 characters of the commit hash.

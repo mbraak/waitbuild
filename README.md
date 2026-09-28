@@ -17,8 +17,13 @@ prints a per-check status to the terminal and shows a macOS notification.
 Install the binary once, somewhere on your PATH:
 
 ```sh
-cd ~/waitbuild && go build -o ~/.local/bin/waitbuild .
+cd ~/waitbuild && rm -f ~/.local/bin/waitbuild && go build -o ~/.local/bin/waitbuild .
 ```
+
+The `rm -f` matters when rebuilding: overwriting a binary in place keeps its
+file, for which macOS has cached the old code signature, and it then refuses
+to start the new binary (a LaunchAgent fails with `OS_REASON_CODESIGNING`).
+The install commands below delete the old binary first for the same reason.
 
 Optionally install [terminal-notifier](https://github.com/julienXX/terminal-notifier)
 so that the notification shows a green check mark or a red cross for the build
@@ -68,9 +73,9 @@ commit statuses and check runs only. When nothing at all is reported within
 ## Menu bar app
 
 `waitbuild-menubar` shows the builds waitbuild is waiting for in the macOS menu
-bar: ⏳ with the number of running builds, or ✅ / ❌ for the most recent
-result. Each build has a submenu with its checks, and clicking a check opens
-it on GitHub. Finished builds stay listed until you dismiss them, use
+bar: ⏳ with the number of running builds, or ✅ / ❌ / 🚫 (cancelled) for the
+most recent result. Each build has a submenu with its checks, and clicking a
+check opens it on GitHub. Finished builds stay listed until you dismiss them, use
 "Clear finished", or they are older than `-keep` (24 hours by default).
 
 Every waitbuild process records its build in a JSON file in
@@ -88,7 +93,7 @@ binary, then on `PATH` (override with `-waitbuild`). The app itself makes no
 GitHub API calls.
 
 ```sh
-cd ~/waitbuild && go build -o ~/.local/bin/waitbuild-menubar ./cmd/waitbuild-menubar
+cd ~/waitbuild && rm -f ~/.local/bin/waitbuild-menubar && go build -o ~/.local/bin/waitbuild-menubar ./cmd/waitbuild-menubar
 waitbuild-menubar &
 ```
 
@@ -134,7 +139,7 @@ reads the same watch files, so it works alongside the menu bar app or instead
 of it, and on systems without a menu bar.
 
 ```sh
-cd ~/waitbuild && go build -o ~/.local/bin/waitbuild-tui ./cmd/waitbuild-tui
+cd ~/waitbuild && rm -f ~/.local/bin/waitbuild-tui && go build -o ~/.local/bin/waitbuild-tui ./cmd/waitbuild-tui
 waitbuild-tui
 ```
 

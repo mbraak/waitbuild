@@ -34,11 +34,12 @@ type item struct {
 }
 
 var stateIcons = map[watch.State]string{
-	watch.Running: "⏳",
-	watch.Success: "✅",
-	watch.Failure: "❌",
-	watch.Error:   "⚠️",
-	watch.Stopped: "⏹",
+	watch.Running:   "⏳",
+	watch.Success:   "✅",
+	watch.Failure:   "❌",
+	watch.Cancelled: "🚫",
+	watch.Error:     "⚠️",
+	watch.Stopped:   "⏹",
 }
 
 // idleTitle is shown in the menu bar when no builds are recorded.
@@ -125,6 +126,8 @@ func checkTitle(c watch.Check) string {
 		return fmt.Sprintf("⏳ %s — %s", c.Name, c.Status)
 	case c.OK():
 		return fmt.Sprintf("✔ %s — %s", c.Name, c.Conclusion)
+	case c.Cancelled():
+		return fmt.Sprintf("⊘ %s — %s", c.Name, c.Conclusion)
 	default:
 		return fmt.Sprintf("✘ %s — %s", c.Name, c.Conclusion)
 	}

@@ -549,11 +549,14 @@ func TestListCheckRuns(t *testing.T) {
 
 func TestListStatuses(t *testing.T) {
 	t.Run("maps commit statuses to checks keyed by context", func(t *testing.T) {
+		canceled := mkStatus("ci/circleci: e2e", "error")
+		canceled.Description = github.Ptr("Your CircleCI tests were canceled")
 		f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{
 			mkStatus("ci/circleci: lint", "success"),
 			mkStatus("ci/circleci: test", "pending"),
 			mkStatus("ci/circleci: build", "failure"),
 			mkStatus("ci/circleci: deploy", "error"),
+			canceled,
 		}})
 		got, err := listStatuses(context.Background(), f.client(t), "o", "r", "abc123")
 		if err != nil {
@@ -564,6 +567,7 @@ func TestListStatuses(t *testing.T) {
 			{key: "status:ci/circleci: test", name: "ci/circleci: test", status: "pending", url: "https://circleci.com/gh/o/r/ci/circleci:test"},
 			{key: "status:ci/circleci: build", name: "ci/circleci: build", status: "completed", conclusion: "failure", url: "https://circleci.com/gh/o/r/ci/circleci:build"},
 			{key: "status:ci/circleci: deploy", name: "ci/circleci: deploy", status: "completed", conclusion: "error", url: "https://circleci.com/gh/o/r/ci/circleci:deploy"},
+			{key: "status:ci/circleci: e2e", name: "ci/circleci: e2e", status: "completed", conclusion: "cancelled", url: "https://circleci.com/gh/o/r/ci/circleci:e2e"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("listStatuses() = %+v, want %+v", got, want)
@@ -1174,14 +1178,14 @@ func TestIconFileWritesDistinctCachedIcons(t *testing.T) {
 	t.Setenv("HOME", cache)           // darwin uses $HOME/Library/Caches
 	t.Setenv("LocalAppData", cache)   // windows
 
-	success, failure := iconFile(true), iconFile(false)
-	if success == "" || failure == "" {
-		t.Fatalf("iconFile() = %q, %q, want two paths", success, failure)
+	success, failure, cancelled := iconFile(iconSuccess), iconFile(iconFailure), iconFile(iconCancelled)
+	if success == "" || failure == "" || cancelled == "" {
+		t.Fatalf("iconFile() = %q, %q, %q, want three paths", success, failure, cancelled)
 	}
-	if success == failure {
-		t.Fatalf("iconFile(true) and iconFile(false) both returned %q", success)
+	if success == failure || success == cancelled || failure == cancelled {
+		t.Fatalf("iconFile() returned duplicate paths %q, %q, %q", success, failure, cancelled)
 	}
-	for _, p := range []string{success, failure} {
+	for _, p := range []string{success, failure, cancelled} {
 		if !strings.HasPrefix(p, cache) {
 			t.Errorf("icon %q not under cache dir %q", p, cache)
 		}
@@ -1198,13 +1202,13 @@ func TestIconFileWritesDistinctCachedIcons(t *testing.T) {
 			t.Errorf("%s: size %dx%d, want 128x128", p, cfg.Width, cfg.Height)
 		}
 	}
-	if again := iconFile(true); again != success {
-		t.Fatalf("second iconFile(true) = %q, want cached %q", again, success)
+	if again := iconFile(iconSuccess); again != success {
+		t.Fatalf("second iconFile(iconSuccess) = %q, want cached %q", again, success)
 	}
 }
 
 func TestDrawIconColors(t *testing.T) {
-	ok, fail := drawIcon(true), drawIcon(false)
+	ok, fail, cancel := drawIcon(iconSuccess), drawIcon(iconFailure), drawIcon(iconCancelled)
 	// The filled disc shows the status colour off-centre, away from the mark.
 	if c := ok.RGBAAt(20, 64); c.G < 0x90 || c.R > 0x60 {
 		t.Errorf("success icon fill = %v, want green", c)
@@ -1212,7 +1216,16 @@ func TestDrawIconColors(t *testing.T) {
 	if c := fail.RGBAAt(20, 64); c.R < 0xa0 || c.G > 0x60 {
 		t.Errorf("failure icon fill = %v, want red", c)
 	}
-	// The mark is white where both icons have a stroke.
+	if c := cancel.RGBAAt(64, 12); c.R < 0x60 || c.R > 0x90 || c.G < 0x60 || c.G > 0x90 || c.B < 0x60 || c.B > 0x90 {
+		t.Errorf("cancelled icon fill = %v, want grey", c)
+	}
+	// The mark is white where the icons have a stroke.
+	if c := cancel.RGBAAt(64, 64); c.R != 0xff || c.G != 0xff || c.B != 0xff {
+		t.Errorf("cancelled icon centre = %v, want white slash", c)
+	}
+	if c := cancel.RGBAAt(64, 32); c.R != 0xff || c.G != 0xff || c.B != 0xff {
+		t.Errorf("cancelled icon ring = %v, want white ring", c)
+	}
 	if c := fail.RGBAAt(64, 64); c.R != 0xff || c.G != 0xff || c.B != 0xff {
 		t.Errorf("failure icon centre = %v, want white cross", c)
 	}

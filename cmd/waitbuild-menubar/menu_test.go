@@ -97,6 +97,20 @@ func TestBuildMenuFinished(t *testing.T) {
 	}
 }
 
+func TestBuildMenuCancelled(t *testing.T) {
+	cancelled := finished("aaaaaaaaaa", false, now.Add(-5*time.Minute),
+		watch.Check{Name: "lint", Status: "completed", Conclusion: "success"},
+		watch.Check{Name: "test", Status: "completed", Conclusion: "cancelled"})
+	m := buildMenu([]watch.Watch{cancelled}, now)
+
+	if m.title != "🚫" {
+		t.Errorf("title = %q, want the cancelled result 🚫", m.title)
+	}
+	if got := titles(m.entries[0].items); !reflect.DeepEqual(got, []string{"Open on GitHub", "✔ lint — success", "⊘ test — cancelled", "Dismiss"}) {
+		t.Errorf("items = %v", got)
+	}
+}
+
 func TestBuildMenuErrorAndStopped(t *testing.T) {
 	gaveUp := finished("aaaaaaaaaa", false, now)
 	gaveUp.Error = "no checks appeared"

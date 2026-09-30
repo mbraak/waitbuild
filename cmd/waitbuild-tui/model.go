@@ -11,11 +11,12 @@ import (
 )
 
 var stateIcons = map[watch.State]string{
-	watch.Running: "⏳",
-	watch.Success: "✅",
-	watch.Failure: "❌",
-	watch.Error:   "⚠️",
-	watch.Stopped: "⏹",
+	watch.Running:   "⏳",
+	watch.Success:   "✅",
+	watch.Failure:   "❌",
+	watch.Cancelled: "🚫",
+	watch.Error:     "⚠️",
+	watch.Stopped:   "⏹",
 }
 
 var (
@@ -356,7 +357,7 @@ func (m model) View() tea.View {
 		case r.kind == checkRow:
 			c := m.watches[r.watch].Checks[r.index]
 			switch {
-			case !c.Done():
+			case !c.Done(), c.Cancelled():
 			case c.OK():
 				line = okStyle.Render(line)
 			default:
@@ -430,6 +431,8 @@ func checkTitle(c watch.Check) string {
 		return fmt.Sprintf("⏳ %s — %s", c.Name, c.Status)
 	case c.OK():
 		return fmt.Sprintf("✔ %s — %s", c.Name, c.Conclusion)
+	case c.Cancelled():
+		return fmt.Sprintf("⊘ %s — %s", c.Name, c.Conclusion)
 	default:
 		return fmt.Sprintf("✘ %s — %s", c.Name, c.Conclusion)
 	}

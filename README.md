@@ -61,7 +61,8 @@ waitbuild -help           # all flags
 `-pr` prints the pull request that contains the commit (an open one when there
 are several) and exits with 1 when there is none.
 
-`-quiet` suppresses all output on stdout; errors are still written to stderr.
+`-quiet` suppresses all output on stdout, as well as the message for a failed
+or cancelled build; other errors are still written to stderr.
 
 Exit code 0 when every check succeeded (or was skipped), 1 otherwise. A commit
 status in state `failure` or `error` counts as a failed check.

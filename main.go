@@ -58,9 +58,17 @@ type check struct {
 	url        string
 }
 
-// quiet suppresses the progress and result output on stdout (-quiet). Errors
-// are still written to stderr and the exit code is unaffected.
+// quiet suppresses the progress and result output on stdout (-quiet), as well
+// as the message for a failed or cancelled build. Other errors are still
+// written to stderr and the exit code is unaffected.
 var quiet bool
+
+// errFailed and errCancelled are returned by run for a build that finished
+// without succeeding. They are part of the result, so -quiet suppresses them.
+var (
+	errFailed    = errors.New("one or more checks did not succeed")
+	errCancelled = errors.New("one or more checks were cancelled")
+)
 
 // printf writes progress output to stdout unless -quiet was given. It looks
 // up os.Stdout on every call so that tests can redirect it.
@@ -117,7 +125,9 @@ func main() {
 	}
 
 	if err := run(*sha, *branch, *repo, *ifRerun, *interval, *appearTimeout, *timeout, *notify); err != nil {
-		fmt.Fprintln(os.Stderr, "waitbuild:", err)
+		if !quiet || (!errors.Is(err, errFailed) && !errors.Is(err, errCancelled)) {
+			fmt.Fprintln(os.Stderr, "waitbuild:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -223,9 +233,9 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	}
 	switch {
 	case failed:
-		return errors.New("one or more checks did not succeed")
+		return errFailed
 	case !ok:
-		return errors.New("one or more checks were cancelled")
+		return errCancelled
 	}
 	return nil
 }

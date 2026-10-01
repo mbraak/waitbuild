@@ -877,8 +877,8 @@ func TestRun(t *testing.T) {
 
 		var err error
 		out := captureStdout(t, func() { err = run("", "", "", false, interval, time.Minute, time.Minute, false) })
-		if err == nil {
-			t.Fatal("run() = nil, want failure: -quiet must not change the exit status")
+		if !errors.Is(err, errFailed) {
+			t.Fatalf("run() = %v, want errFailed: -quiet must not change the exit status", err)
 		}
 		if out != "" {
 			t.Errorf("output with -quiet = %q, want nothing", out)

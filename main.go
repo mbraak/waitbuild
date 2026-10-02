@@ -59,12 +59,14 @@ type check struct {
 }
 
 // quiet suppresses the progress and result output on stdout (-quiet), as well
-// as the message for a failed or cancelled build. Other errors are still
-// written to stderr and the exit code is unaffected.
+// as the message for a failed build. Other errors are still written to stderr
+// and the exit code is unaffected.
 var quiet bool
 
 // errFailed and errCancelled are returned by run for a build that finished
-// without succeeding. They are part of the result, so -quiet suppresses them.
+// without succeeding. They are part of the result, so -quiet suppresses
+// errFailed; errCancelled is never shown, as a cancelled build (usually
+// superseded by a newer push) needs no attention.
 var (
 	errFailed    = errors.New("one or more checks did not succeed")
 	errCancelled = errors.New("one or more checks were cancelled")
@@ -125,11 +127,22 @@ func main() {
 	}
 
 	if err := run(*sha, *branch, *repo, *ifRerun, *interval, *appearTimeout, *timeout, *notify); err != nil {
-		if !quiet || (!errors.Is(err, errFailed) && !errors.Is(err, errCancelled)) {
+		if showError(err) {
 			fmt.Fprintln(os.Stderr, "waitbuild:", err)
 		}
 		os.Exit(1)
 	}
+}
+
+// showError reports whether main writes the error returned by run to stderr.
+func showError(err error) bool {
+	switch {
+	case errors.Is(err, errCancelled):
+		return false
+	case errors.Is(err, errFailed):
+		return !quiet
+	}
+	return true
 }
 
 // run waits for the build of sha in repo ("owner/repo"). An empty sha, branch
@@ -221,13 +234,12 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 
 	url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
 	rec.finish(ok, url)
-	if notify {
+	// A cancelled build (usually superseded by a newer push) needs no
+	// attention, so it gets no notification.
+	if notify && (ok || failed) {
 		title, icon := fmt.Sprintf("Build of %s succeeded", branch), iconSuccess
-		switch {
-		case failed:
+		if failed {
 			title, icon = fmt.Sprintf("Build of %s FAILED", branch), iconFailure
-		case !ok:
-			title, icon = fmt.Sprintf("Build of %s was cancelled", branch), iconCancelled
 		}
 		desktopNotify(title, fmt.Sprintf("%s/%s @ %s", owner, repo, sha[:min(10, len(sha))]), url, iconFile(icon))
 	}
@@ -646,9 +658,8 @@ func desktopNotify(title, message, url, icon string) string {
 type icon string
 
 const (
-	iconSuccess   icon = "success"   // green with a check mark
-	iconFailure   icon = "failure"   // red with a cross
-	iconCancelled icon = "cancelled" // grey with a slashed circle
+	iconSuccess icon = "success" // green with a check mark
+	iconFailure icon = "failure" // red with a cross
 )
 
 // iconFile returns the path of the notification icon of the given kind,
@@ -684,8 +695,7 @@ func iconFile(kind icon) string {
 }
 
 // drawIcon renders a filled circle with a white mark: green with a check mark
-// for success, red with a cross for failure and grey with a slashed circle
-// (like ⊘) for cancelled.
+// for success and red with a cross for failure.
 func drawIcon(kind icon) *image.RGBA {
 	const (
 		size   = 128
@@ -696,16 +706,11 @@ func drawIcon(kind icon) *image.RGBA {
 	var (
 		fill    color.RGBA
 		strokes [][4]float64
-		ring    float64 // radius of a white ring inside the disc, 0 for none
 	)
 	switch kind {
 	case iconSuccess:
 		fill = color.RGBA{0x2d, 0xa4, 0x4e, 0xff} // green
 		strokes = [][4]float64{{34, 66, 56, 88}, {56, 88, 96, 44}}
-	case iconCancelled:
-		fill = color.RGBA{0x6e, 0x77, 0x81, 0xff} // grey
-		ring = 32
-		strokes = [][4]float64{{41, 87, 87, 41}}
 	default:
 		fill = color.RGBA{0xcf, 0x22, 0x2e, 0xff} // red
 		strokes = [][4]float64{{42, 42, 86, 86}, {86, 42, 42, 86}}
@@ -721,9 +726,6 @@ func drawIcon(kind icon) *image.RGBA {
 				continue
 			}
 			mark := 0.0
-			if ring > 0 {
-				mark = cover(math.Abs(math.Hypot(px-center, py-center)-ring) - stroke)
-			}
 			for _, s := range strokes {
 				mark = math.Max(mark, cover(distToSegment(px, py, s)-stroke))
 			}

@@ -62,7 +62,8 @@ waitbuild -help           # all flags
 are several) and exits with 1 when there is none.
 
 `-quiet` suppresses all output on stdout, as well as the message for a failed
-or cancelled build; other errors are still written to stderr.
+build; other errors are still written to stderr. A cancelled build never prints
+a message or shows a notification (it still exits with 1).
 
 Exit code 0 when every check succeeded (or was skipped), 1 otherwise. A commit
 status in state `failure` or `error` counts as a failed check.

@@ -58,9 +58,9 @@ func TestRowsExpandRunningBuilds(t *testing.T) {
 			watch.Check{Name: "lint", Status: "completed", Conclusion: "failure"}),
 	)
 	want := []string{
-		"⏳ o/r · main · aaaaaaa — 1/2, running 2m",
+		"⠋  o/r · main · aaaaaaa — 1/2, running 2m",
 		"✔ build — success",
-		"⏳ test — in_progress",
+		"⠋ test — in_progress",
 		"❌ o/r · feature · bbbbbbb — 5m ago",
 	}
 	if got := texts(m.rows()); !reflect.DeepEqual(got, want) {
@@ -87,7 +87,7 @@ func TestRowsInfo(t *testing.T) {
 	m := loaded(running("aaaaaaaaaa", now), gaveUp, stopped)
 	m, _ = press(m, "down", "down", "enter", "down", "down", "enter")
 	want := []string{
-		"⏳ o/r · main · aaaaaaa — 0/0, just started",
+		"⠋  o/r · main · aaaaaaa — 0/0, just started",
 		"Waiting for checks to appear…",
 		"⚠️ o/r · feature · ccccccc — just now",
 		"Gave up: no checks appeared",
@@ -206,7 +206,7 @@ func TestHeader(t *testing.T) {
 		want    string
 	}{
 		{nil, "waitbuild: no builds"},
-		{[]watch.Watch{running("a", now), running("b", now), finished("c", true, now)}, "waitbuild ⏳ 2 running"},
+		{[]watch.Watch{running("a", now), running("b", now), finished("c", true, now)}, "waitbuild 🟡 2 running"},
 		{[]watch.Watch{finished("a", false, now), finished("b", true, now)}, "waitbuild ❌ last build failure"},
 	} {
 		if got := header(tc.watches); got != tc.want {
@@ -221,4 +221,30 @@ func shas(watches []watch.Watch) []string {
 		out = append(out, w.SHA)
 	}
 	return out
+}
+
+func TestSpinner(t *testing.T) {
+	m := newModel("", time.Hour, time.Second)
+	next, cmd := m.Update(loadedMsg{watches: []watch.Watch{running("aaaaaaaaaa", now)}, now: now})
+	m = next.(model)
+	if cmd == nil || !m.spinning {
+		t.Fatal("loading a running build did not start the spinner")
+	}
+
+	next, cmd = m.Update(spinMsg{})
+	m = next.(model)
+	if cmd == nil {
+		t.Error("spinner stopped while a build is running")
+	}
+	if got, want := m.rows()[0].text, "⠙  o/r · main · aaaaaaa — 0/0, just started"; got != want {
+		t.Errorf("row = %q, want %q", got, want)
+	}
+
+	next, _ = m.Update(loadedMsg{watches: []watch.Watch{finished("aaaaaaaaaa", true, now)}, now: now})
+	m = next.(model)
+	next, cmd = m.Update(spinMsg{})
+	m = next.(model)
+	if cmd != nil || m.spinning {
+		t.Error("spinner kept running after the build finished")
+	}
 }

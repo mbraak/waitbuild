@@ -70,6 +70,31 @@ func TestParseGitHubRemote(t *testing.T) {
 
 // --- githubToken -----------------------------------------------------------
 
+func TestShowError(t *testing.T) {
+	other := errors.New("no checks appeared")
+	for _, tc := range []struct {
+		name  string
+		err   error
+		quiet bool
+		want  bool
+	}{
+		{"failed", errFailed, false, true},
+		{"failed with -quiet", errFailed, true, false},
+		{"cancelled", errCancelled, false, false},
+		{"cancelled with -quiet", errCancelled, true, false},
+		{"other error", other, false, true},
+		{"other error with -quiet", other, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			quiet = tc.quiet
+			t.Cleanup(func() { quiet = false })
+			if got := showError(tc.err); got != tc.want {
+				t.Errorf("showError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGithubToken(t *testing.T) {
 	// A PATH without gh so the fallback cannot accidentally succeed.
 	t.Setenv("PATH", t.TempDir())
@@ -985,6 +1010,36 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("cancelled build sends no notification", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("fake terminal-notifier script needs a POSIX shell")
+		}
+		bin := t.TempDir()
+		out := filepath.Join(bin, "args")
+		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + out + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "terminal-notifier"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		for _, tc := range []struct {
+			conclusion string
+			notified   bool
+		}{{"cancelled", false}, {"failure", true}} {
+			dir, _, _ := initRepo(t, remote)
+			t.Chdir(dir)
+			os.Remove(out)
+			f := newFakeAPI(t, runsOnly(done(1, "build", tc.conclusion)))
+			useFakeAPI(t, f, "tok")
+			if err := run("", "", "", false, interval, time.Minute, time.Minute, true); err == nil {
+				t.Fatalf("%s: run() = nil, want failure", tc.conclusion)
+			}
+			if _, err := os.Stat(out); (err == nil) != tc.notified {
+				t.Errorf("%s: notification sent = %v, want %v", tc.conclusion, err == nil, tc.notified)
+			}
+		}
+	})
+
 	t.Run("explicit sha overrides HEAD", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
@@ -1178,14 +1233,14 @@ func TestIconFileWritesDistinctCachedIcons(t *testing.T) {
 	t.Setenv("HOME", cache)           // darwin uses $HOME/Library/Caches
 	t.Setenv("LocalAppData", cache)   // windows
 
-	success, failure, cancelled := iconFile(iconSuccess), iconFile(iconFailure), iconFile(iconCancelled)
-	if success == "" || failure == "" || cancelled == "" {
-		t.Fatalf("iconFile() = %q, %q, %q, want three paths", success, failure, cancelled)
+	success, failure := iconFile(iconSuccess), iconFile(iconFailure)
+	if success == "" || failure == "" {
+		t.Fatalf("iconFile() = %q, %q, want two paths", success, failure)
 	}
-	if success == failure || success == cancelled || failure == cancelled {
-		t.Fatalf("iconFile() returned duplicate paths %q, %q, %q", success, failure, cancelled)
+	if success == failure {
+		t.Fatalf("iconFile(iconSuccess) and iconFile(iconFailure) both returned %q", success)
 	}
-	for _, p := range []string{success, failure, cancelled} {
+	for _, p := range []string{success, failure} {
 		if !strings.HasPrefix(p, cache) {
 			t.Errorf("icon %q not under cache dir %q", p, cache)
 		}
@@ -1208,7 +1263,7 @@ func TestIconFileWritesDistinctCachedIcons(t *testing.T) {
 }
 
 func TestDrawIconColors(t *testing.T) {
-	ok, fail, cancel := drawIcon(iconSuccess), drawIcon(iconFailure), drawIcon(iconCancelled)
+	ok, fail := drawIcon(iconSuccess), drawIcon(iconFailure)
 	// The filled disc shows the status colour off-centre, away from the mark.
 	if c := ok.RGBAAt(20, 64); c.G < 0x90 || c.R > 0x60 {
 		t.Errorf("success icon fill = %v, want green", c)
@@ -1216,16 +1271,7 @@ func TestDrawIconColors(t *testing.T) {
 	if c := fail.RGBAAt(20, 64); c.R < 0xa0 || c.G > 0x60 {
 		t.Errorf("failure icon fill = %v, want red", c)
 	}
-	if c := cancel.RGBAAt(64, 12); c.R < 0x60 || c.R > 0x90 || c.G < 0x60 || c.G > 0x90 || c.B < 0x60 || c.B > 0x90 {
-		t.Errorf("cancelled icon fill = %v, want grey", c)
-	}
-	// The mark is white where the icons have a stroke.
-	if c := cancel.RGBAAt(64, 64); c.R != 0xff || c.G != 0xff || c.B != 0xff {
-		t.Errorf("cancelled icon centre = %v, want white slash", c)
-	}
-	if c := cancel.RGBAAt(64, 32); c.R != 0xff || c.G != 0xff || c.B != 0xff {
-		t.Errorf("cancelled icon ring = %v, want white ring", c)
-	}
+	// The mark is white where both icons have a stroke.
 	if c := fail.RGBAAt(64, 64); c.R != 0xff || c.G != 0xff || c.B != 0xff {
 		t.Errorf("failure icon centre = %v, want white cross", c)
 	}

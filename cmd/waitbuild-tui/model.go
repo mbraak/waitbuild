@@ -11,7 +11,7 @@ import (
 )
 
 var stateIcons = map[watch.State]string{
-	watch.Running:   "⏳",
+	watch.Running:   "🟡",
 	watch.Success:   "✅",
 	watch.Failure:   "❌",
 	watch.Cancelled: "🚫",
@@ -25,6 +25,7 @@ var (
 	faintStyle    = lipgloss.NewStyle().Faint(true)
 	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Green)
 	failStyle     = lipgloss.NewStyle().Foreground(lipgloss.Red)
+	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
 )
 
 const helpText = "↑/↓ move · enter expand/open · o open on GitHub · d dismiss · c clear finished · q quit"
@@ -357,7 +358,9 @@ func (m model) View() tea.View {
 		case r.kind == checkRow:
 			c := m.watches[r.watch].Checks[r.index]
 			switch {
-			case !c.Done(), c.Cancelled():
+			case c.Cancelled():
+			case !c.Done():
+				line = runningStyle.Render(line)
 			case c.OK():
 				line = okStyle.Render(line)
 			default:
@@ -428,7 +431,7 @@ func buildTitle(w watch.Watch, state watch.State, now time.Time) string {
 func checkTitle(c watch.Check) string {
 	switch {
 	case !c.Done():
-		return fmt.Sprintf("⏳ %s — %s", c.Name, c.Status)
+		return fmt.Sprintf("● %s — %s", c.Name, c.Status)
 	case c.OK():
 		return fmt.Sprintf("✔ %s — %s", c.Name, c.Conclusion)
 	case c.Cancelled():

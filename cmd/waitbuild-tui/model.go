@@ -11,7 +11,7 @@ import (
 )
 
 var stateIcons = map[watch.State]string{
-	watch.Running:   "⏳",
+	watch.Running:   "🟡",
 	watch.Success:   "✅",
 	watch.Failure:   "❌",
 	watch.Cancelled: "🚫",
@@ -25,6 +25,7 @@ var (
 	faintStyle    = lipgloss.NewStyle().Faint(true)
 	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Green)
 	failStyle     = lipgloss.NewStyle().Foreground(lipgloss.Red)
+	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
 )
 
 const helpText = "↑/↓ move · enter expand/open · o open on GitHub · d dismiss · c clear finished · q quit"
@@ -37,6 +38,13 @@ type loadedMsg struct {
 }
 
 type tickMsg struct{}
+
+// spinMsg advances the spinner of running builds and checks.
+type spinMsg struct{}
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const spinInterval = 100 * time.Millisecond
 
 // statusMsg is shown below the list until the next key press.
 type statusMsg string
@@ -78,11 +86,13 @@ type model struct {
 
 	// toggled records builds the user expanded or collapsed. Other builds are
 	// expanded while they run.
-	toggled map[string]bool
-	cursor  int   // index into rows()
-	sel     rowID // the selected row, to find it again after a reload
-	offset  int   // first row shown
-	height  int   // terminal height
+	toggled  map[string]bool
+	frame    int   // current spinner frame
+	spinning bool  // whether a spinMsg is scheduled
+	cursor   int   // index into rows()
+	sel      rowID // the selected row, to find it again after a reload
+	offset   int   // first row shown
+	height   int   // terminal height
 }
 
 func newModel(dir string, keep, interval time.Duration) model {
@@ -92,6 +102,19 @@ func newModel(dir string, keep, interval time.Duration) model {
 func watchKey(w watch.Watch) string { return w.Owner + "/" + w.Repo + "@" + w.SHA }
 
 func (m model) Init() tea.Cmd { return tea.Batch(m.load(nil), m.tick()) }
+
+func (m model) spin() tea.Cmd {
+	return tea.Tick(spinInterval, func(time.Time) tea.Msg { return spinMsg{} })
+}
+
+func (m model) anyRunning() bool {
+	for _, w := range m.watches {
+		if w.State() == watch.Running {
+			return true
+		}
+	}
+	return false
+}
 
 func (m model) tick() tea.Cmd {
 	return tea.Tick(m.interval, func(time.Time) tea.Msg { return tickMsg{} })
@@ -125,9 +148,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case tickMsg:
 		return m, tea.Batch(m.load(nil), m.tick())
+	case spinMsg:
+		m.spinning = m.anyRunning()
+		if !m.spinning {
+			return m, nil
+		}
+		m.frame = (m.frame + 1) % len(spinnerFrames)
+		return m, m.spin()
 	case loadedMsg:
 		m.watches, m.err, m.now = msg.watches, msg.err, msg.now
 		m.restoreSelection()
+		if !m.spinning && m.anyRunning() {
+			m.spinning = true
+			return m, m.spin()
+		}
 	case statusMsg:
 		m.status = string(msg)
 	case tea.KeyPressMsg:
@@ -232,7 +266,7 @@ func (m model) rows() []row {
 	var rows []row
 	for i, w := range m.watches {
 		state := w.State()
-		rows = append(rows, row{kind: buildRow, watch: i, text: buildTitle(w, state, m.now)})
+		rows = append(rows, row{kind: buildRow, watch: i, text: buildTitle(w, state, m.spinner(), m.now)})
 		if !m.expanded(w) {
 			continue
 		}
@@ -250,7 +284,7 @@ func (m model) rows() []row {
 			rows = append(rows, row{kind: infoRow, watch: i, index: j, text: s})
 		}
 		for j, c := range w.Checks {
-			rows = append(rows, row{kind: checkRow, watch: i, index: j, text: checkTitle(c), url: c.URL})
+			rows = append(rows, row{kind: checkRow, watch: i, index: j, text: checkTitle(c, m.spinner()), url: c.URL})
 		}
 	}
 	return rows
@@ -357,7 +391,9 @@ func (m model) View() tea.View {
 		case r.kind == checkRow:
 			c := m.watches[r.watch].Checks[r.index]
 			switch {
-			case !c.Done(), c.Cancelled():
+			case c.Cancelled():
+			case !c.Done():
+				line = runningStyle.Render(line)
 			case c.OK():
 				line = okStyle.Render(line)
 			default:
@@ -403,8 +439,17 @@ func header(watches []watch.Watch) string {
 	return "waitbuild: no builds"
 }
 
-func buildTitle(w watch.Watch, state watch.State, now time.Time) string {
-	title := fmt.Sprintf("%s %s/%s · %s · %s", stateIcons[state], w.Owner, w.Repo, w.Branch, w.ShortSHA())
+// spinner returns the current frame of the spinner shown for running builds
+// and checks.
+func (m model) spinner() string { return spinnerFrames[m.frame] }
+
+// buildTitle shows spinner in place of the icon of a running build.
+func buildTitle(w watch.Watch, state watch.State, spinner string, now time.Time) string {
+	icon := stateIcons[state]
+	if state == watch.Running {
+		icon = spinner + " " // pad to the width of the other icons
+	}
+	title := fmt.Sprintf("%s %s/%s · %s · %s", icon, w.Owner, w.Repo, w.Branch, w.ShortSHA())
 	if state == watch.Running {
 		done := 0
 		for _, c := range w.Checks {
@@ -425,10 +470,10 @@ func buildTitle(w watch.Watch, state watch.State, now time.Time) string {
 	return title + " — " + finished
 }
 
-func checkTitle(c watch.Check) string {
+func checkTitle(c watch.Check, spinner string) string {
 	switch {
 	case !c.Done():
-		return fmt.Sprintf("⏳ %s — %s", c.Name, c.Status)
+		return fmt.Sprintf("%s %s — %s", spinner, c.Name, c.Status)
 	case c.OK():
 		return fmt.Sprintf("✔ %s — %s", c.Name, c.Conclusion)
 	case c.Cancelled():

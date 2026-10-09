@@ -529,8 +529,8 @@ func TestListCheckRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []check{
-			{key: "check:10", name: "SonarCloud Code Analysis", status: "completed", conclusion: "success", url: "https://github.com/o/r/runs/10"},
-			{key: "check:12", name: "Aikido Security: check code", status: "in_progress", url: "https://github.com/o/r/runs/12"},
+			{key: "check:10", name: "SonarCloud Code Analysis", status: "completed", conclusion: "success", url: "https://github.com/o/r/runs/10", app: "sonarqubecloud"},
+			{key: "check:12", name: "Aikido Security: check code", status: "in_progress", url: "https://github.com/o/r/runs/12", app: "aikido-pr-checks"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("listCheckRuns() = %+v, want %+v", got, want)
@@ -646,7 +646,7 @@ func TestListChecks(t *testing.T) {
 			checkRuns: []*github.CheckRun{mkCheckRun(2, "SonarCloud", "sonarqubecloud", "completed", "success"), mkCheckRun(3, "danger", "github-actions", "completed", "success")},
 			statuses:  []*github.RepoStatus{mkStatus("ci/circleci: lint", "pending"), mkStatus("ci/circleci: build", "success")},
 		})
-		got, err := listChecks(context.Background(), f.client(t), "o", "r", "sha")
+		got, err := listChecks(context.Background(), f.client(t), nil, "o", "r", "sha")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -658,7 +658,7 @@ func TestListChecks(t *testing.T) {
 
 	t.Run("fails when any source fails", func(t *testing.T) {
 		f := newFakeAPI(t, nil)
-		_, err := listChecks(context.Background(), f.client(t), "o", "r", "sha")
+		_, err := listChecks(context.Background(), f.client(t), nil, "o", "r", "sha")
 		if err == nil {
 			t.Fatal("listChecks() = nil, want error")
 		}
@@ -671,7 +671,7 @@ func TestWaitForChecks(t *testing.T) {
 	const interval = time.Millisecond
 	const appear = time.Minute
 	wait := func(f *fakeAPI, ctx context.Context, appear time.Duration) ([]check, error) {
-		return waitForChecks(ctx, f.client(t), "o", "r", "sha", interval, appear, true, nil)
+		return waitForChecks(ctx, f.client(t), nil, "o", "r", "sha", interval, appear, true, nil)
 	}
 
 	t.Run("waits for runs to appear and complete, settling twice", func(t *testing.T) {
@@ -779,7 +779,7 @@ func TestWaitForChecks(t *testing.T) {
 
 	t.Run("gives up when no check appears", func(t *testing.T) {
 		f := newFakeAPI(t, &poll{})
-		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, true, nil)
+		_, err := waitForChecks(context.Background(), f.client(t), nil, "o", "r", "deadbeef", interval, 20*time.Millisecond, true, nil)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -793,7 +793,7 @@ func TestWaitForChecks(t *testing.T) {
 
 	t.Run("mentions the missing workflows when nothing appears", func(t *testing.T) {
 		f := newFakeAPI(t, &poll{})
-		_, err := waitForChecks(context.Background(), f.client(t), "o", "r", "deadbeef", interval, 20*time.Millisecond, false, nil)
+		_, err := waitForChecks(context.Background(), f.client(t), nil, "o", "r", "deadbeef", interval, 20*time.Millisecond, false, nil)
 		if err == nil || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
 			t.Fatalf("error = %v, want a hint about missing workflows", err)
 		}
@@ -846,6 +846,9 @@ func TestRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no gh, no osascript
 	t.Setenv("GITHUB_TOKEN", "tok")
 	t.Setenv("GH_TOKEN", "")
+	t.Setenv("CIRCLE_TOKEN", "") // CircleCI is covered by TestRunWithCircleCI
+	t.Setenv("CIRCLECI_TOKEN", "")
+	t.Setenv("HOME", t.TempDir()) // no CircleCI CLI config
 
 	t.Run("all checks succeed", func(t *testing.T) {
 		dir, _, sha := initRepo(t, remote)

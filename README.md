@@ -20,6 +20,10 @@ Install the binary once, somewhere on your PATH:
 cd ~/waitbuild && rm -f ~/.local/bin/waitbuild && go build -o ~/.local/bin/waitbuild .
 ```
 
+Or build and install all commands (`waitbuild`, `waitbuild-menubar` and
+`waitbuild-tui`) with `./install.sh`. It installs into `~/.local/bin`
+(override with `BIN=...`) and restarts the menu bar app's LaunchAgent, if any.
+
 The `rm -f` matters when rebuilding: overwriting a binary in place keeps its
 file, for which macOS has cached the old code signature, and it then refuses
 to start the new binary (a LaunchAgent fails with `OS_REASON_CODESIGNING`).
@@ -47,6 +51,23 @@ git config core.hooksPath .githooks
 Set `WAITBUILD_OUT=/path/to/log` to send the hook's output to a file instead of the terminal.
 
 Requires a GitHub token: `GITHUB_TOKEN`, `GH_TOKEN`, or a `gh auth login` session.
+
+### CircleCI
+
+CircleCI reports to GitHub only once it has started jobs. When CircleCI is
+slow to set up a pipeline, GitHub can list nothing but checks that finish
+quickly, and the build looks finished while CircleCI has not started yet.
+With a CircleCI API token, waitbuild asks CircleCI directly: it keeps waiting
+while the commit's pipeline is being set up and reports each workflow as a
+check (`circleci: <workflow>`) in place of the `ci/circleci: <job>` statuses.
+A workflow on hold for an approval counts as finished.
+
+The token is read from `CIRCLE_TOKEN` or `CIRCLECI_TOKEN`, from a `token:`
+line in `~/.config/circleci/config.yml` or `~/.circleci/cli.yml`, or else from
+the macOS keychain, where the current CircleCI CLI keeps the token saved with
+`circleci setup` (service `com.circleci.cli:<host>`). So once the CircleCI CLI
+is set up, nothing else is needed. Without a token, waitbuild relies on what
+CircleCI posts to GitHub.
 
 ## Run by hand
 

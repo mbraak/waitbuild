@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ var successConclusions = map[string]bool{
 	"success": true,
 	"skipped": true,
 	"neutral": true,
+	"on_hold": true, // a CircleCI workflow waiting for a manual approval
 }
 
 // actionsAppSlug is the GitHub App that creates check runs for GitHub Actions
@@ -56,6 +58,7 @@ type check struct {
 	status     string // as reported by GitHub; "completed" once finished
 	conclusion string // set once completed
 	url        string
+	app        string // slug of the GitHub App that created a check run
 }
 
 // quiet suppresses the progress and result output on stdout (-quiet), as well
@@ -151,6 +154,7 @@ func showError(err error) bool {
 // rerun (see rerunLikely).
 func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeout time.Duration, notify bool) error {
 	var owner string
+	circleBranch := branch // the real branch, if known, to find CircleCI pipelines by
 	if repo != "" {
 		full := repo
 		var ok bool
@@ -174,6 +178,9 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		if branch == "" {
 			branch = info.branch
 		}
+		if circleBranch == "" && branch != "HEAD" {
+			circleBranch = branch
+		}
 		if owner, repo, err = parseGitHubRemote(info.remote); err != nil {
 			return err
 		}
@@ -190,8 +197,10 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
 
+	circle := newCircleCI(owner, repo, circleBranch)
+
 	if ifRerun {
-		checks, err := listChecks(ctx, client, owner, repo, sha)
+		checks, err := listChecks(ctx, client, circle, owner, repo, sha)
 		if err != nil {
 			return err
 		}
@@ -210,7 +219,7 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	}
 
 	rec := newRecorder(owner, repo, branch, sha)
-	checks, err := waitForChecks(ctx, client, owner, repo, sha, interval, appearTimeout, hasWorkflows, rec.update)
+	checks, err := waitForChecks(ctx, client, circle, owner, repo, sha, interval, appearTimeout, hasWorkflows, rec.update)
 	if err != nil {
 		rec.fail(err)
 		return err
@@ -300,15 +309,16 @@ func hasActionsWorkflows(ctx context.Context, client *github.Client, owner, repo
 // has completed. Because several workflows and services report on the same
 // push and can register a few seconds apart, "all completed" has to hold for
 // two consecutive polls before the result is accepted. onPoll, when not nil,
-// receives the checks after every poll.
-func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool, onPoll func([]check)) ([]check, error) {
+// receives the checks after every poll. circle, when not nil, also asks
+// CircleCI.
+func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool, onPoll func([]check)) ([]check, error) {
 	start := time.Now()
 	seen := map[string]string{} // check key -> last reported state
 	settledOnce := false
 	width := 30
 
 	for {
-		checks, err := listChecks(ctx, client, owner, repo, sha)
+		checks, err := listChecks(ctx, client, circle, owner, repo, sha)
 		if err != nil {
 			return nil, err
 		}
@@ -356,9 +366,11 @@ func waitForChecks(ctx context.Context, client *github.Client, owner, repo, sha 
 }
 
 // listChecks gathers everything GitHub knows about the commit's CI: Actions
-// workflow runs, check runs from other GitHub Apps and commit statuses. The
-// result is sorted by name.
-func listChecks(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
+// workflow runs, check runs from other GitHub Apps and commit statuses. With
+// circle not nil, a CircleCI pipeline for the commit is reported per workflow
+// instead of through what CircleCI posted to GitHub. The result is sorted by
+// name.
+func listChecks(ctx context.Context, client *github.Client, circle *circleCI, owner, repo, sha string) ([]check, error) {
 	runs, err := listRuns(ctx, client, owner, repo, sha)
 	if err != nil {
 		return nil, err
@@ -372,7 +384,16 @@ func listChecks(ctx context.Context, client *github.Client, owner, repo, sha str
 		return nil, err
 	}
 
+	circleChecks, found, err := circle.checks(ctx, sha)
+	if err != nil {
+		return nil, err
+	}
+
 	all := append(append(runs, checkRuns...), statuses...)
+	if found {
+		all = slices.DeleteFunc(all, check.fromCircleCI)
+		all = append(all, circleChecks...)
+	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].name < all[j].name })
 	return all, nil
 }
@@ -426,6 +447,7 @@ func listCheckRuns(ctx context.Context, client *github.Client, owner, repo, sha 
 				status:     r.GetStatus(),
 				conclusion: r.GetConclusion(),
 				url:        r.GetHTMLURL(),
+				app:        r.GetApp().GetSlug(),
 			})
 		}
 		if resp.NextPage == 0 {

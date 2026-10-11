@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // circleCIBaseURL is the CircleCI API; a variable so tests can point it at a
@@ -23,6 +24,12 @@ var circleCIBaseURL = "https://circleci.com/api/v2"
 // searched for the commit. Pipelines are listed newest first, so a commit that
 // was just pushed is on the first page.
 const circleCIPipelinePages = 3
+
+// circleCIWorkflowsGrace is how long a set-up pipeline without workflows
+// counts as pending. CircleCI can take many minutes (over twenty have been
+// seen) between setting up a pipeline and starting its workflows, but a
+// pipeline whose config runs no workflow for the commit never gets any.
+const circleCIWorkflowsGrace = 30 * time.Minute
 
 // circleCI asks CircleCI itself about the build of a commit. CircleCI reports
 // to GitHub only once it has started jobs, so while a pipeline is waiting to
@@ -117,10 +124,11 @@ func yamlValue(path, key string) string {
 // circleCIPipeline and circleCIWorkflow are the parts of CircleCI's API
 // responses that waitbuild uses.
 type circleCIPipeline struct {
-	ID     string `json:"id"`
-	Number int64  `json:"number"`
-	State  string `json:"state"`
-	VCS    struct {
+	ID        string    `json:"id"`
+	Number    int64     `json:"number"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	VCS       struct {
 		Revision string `json:"revision"`
 	} `json:"vcs"`
 }
@@ -169,8 +177,9 @@ func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any
 
 // checks returns the CircleCI build of sha as checks, one per workflow, and
 // whether CircleCI has a pipeline for sha at all. A pipeline that CircleCI
-// has not set up yet is reported as a single pending check, so that the build
-// is not taken for finished while it waits.
+// has not set up yet, or has set up but not started any workflow of yet, is
+// reported as a single pending check, so that the build is not taken for
+// finished while it waits.
 func (c *circleCI) checks(ctx context.Context, sha string) ([]check, bool, error) {
 	if c == nil || c.missing {
 		return nil, false, nil
@@ -199,6 +208,9 @@ func (c *circleCI) checks(ctx context.Context, sha string) ([]check, bool, error
 	workflows, err := c.workflows(ctx, p.ID)
 	if err != nil {
 		return nil, false, fmt.Errorf("listing CircleCI workflows: %w", err)
+	}
+	if len(workflows) == 0 && time.Since(p.CreatedAt) < circleCIWorkflowsGrace {
+		return []check{{key: "circleci:pipeline", name: "circleci: pipeline", status: "pending", url: pipelineURL}}, true, nil
 	}
 	var all []check
 	for _, w := range workflows {

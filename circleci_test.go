@@ -261,6 +261,30 @@ func TestCircleCIChecks(t *testing.T) {
 		}
 	})
 
+	t.Run("a new pipeline without workflows is one pending check", func(t *testing.T) {
+		p := mkPipeline("p1", 11, "created", "sha")
+		p.CreatedAt = time.Now().Add(-5 * time.Minute)
+		newFakeCircleCI(t, circlePoll{pipelines: []circleCIPipeline{p}})
+		got, found, err := testCircleCI().checks(ctx, "sha")
+		if err != nil || !found {
+			t.Fatalf("checks() found=%v err=%v", found, err)
+		}
+		want := []check{{key: "circleci:pipeline", name: "circleci: pipeline", status: "pending", url: "https://app.circleci.com/pipelines/github/o/r/11"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("checks() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("an old pipeline without workflows reports nothing", func(t *testing.T) {
+		p := mkPipeline("p1", 11, "created", "sha")
+		p.CreatedAt = time.Now().Add(-circleCIWorkflowsGrace - time.Minute)
+		newFakeCircleCI(t, circlePoll{pipelines: []circleCIPipeline{p}})
+		got, found, err := testCircleCI().checks(ctx, "sha")
+		if len(got) != 0 || !found || err != nil {
+			t.Errorf("checks() = %v, %v, %v; want no checks, found", got, found, err)
+		}
+	})
+
 	t.Run("no pipeline for the commit", func(t *testing.T) {
 		newFakeCircleCI(t, circlePoll{pipelines: []circleCIPipeline{mkPipeline("p1", 11, "created", "other")}})
 		got, found, err := testCircleCI().checks(ctx, "sha")

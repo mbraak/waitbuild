@@ -58,7 +58,8 @@ CircleCI reports to GitHub only once it has started jobs. When CircleCI is
 slow to set up a pipeline, GitHub can list nothing but checks that finish
 quickly, and the build looks finished while CircleCI has not started yet.
 With a CircleCI API token, waitbuild asks CircleCI directly: it keeps waiting
-while the commit's pipeline is being set up and reports each workflow as a
+while the commit's pipeline is being set up or has yet to start its
+workflows (for up to 30 minutes), and reports each workflow as a
 check (`circleci: <workflow>`) in place of the `ci/circleci: <job>` statuses.
 A workflow on hold for an approval counts as finished.
 

@@ -23,11 +23,26 @@ for cmd in waitbuild waitbuild-menubar waitbuild-tui; do
   echo "installed $bin/$cmd"
 done
 
-service=gui/$(id -u)/com.github.mbraak.waitbuild-menubar
-program=$(launchctl print "$service" 2>/dev/null | sed -n 's/^[[:space:]]*program = //p' | head -n 1)
-if [ "$program" = "$bin/waitbuild-menubar" ]; then
-  launchctl kickstart -k "$service"
+domain=gui/$(id -u)
+label=com.github.mbraak.waitbuild-menubar
+service=$domain/$label
+plist=$HOME/Library/LaunchAgents/$label.plist
+if launchctl print "$service" >/dev/null 2>&1; then
+  # Unload and load the agent instead of kickstarting it: launchd pins the
+  # code signature (cdhash) of the binary it registered, and refuses to spawn
+  # a rebuilt one (OS_REASON_CODESIGNING) until the agent is registered again.
+  # bootout returns before the agent is gone, and bootstrapping it before
+  # then fails with "Input/output error", so wait for it.
+  launchctl bootout "$service" 2>/dev/null || true
+  for _ in $(seq 50); do
+    launchctl print "$service" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  launchctl bootstrap "$domain" "$plist"
   echo "restarted the waitbuild-menubar LaunchAgent"
+elif [ -f "$plist" ] && grep -q "<string>$bin/waitbuild-menubar</string>" "$plist"; then
+  launchctl bootstrap "$domain" "$plist"
+  echo "started the waitbuild-menubar LaunchAgent"
 elif pgrep -xq waitbuild-menubar; then
   echo "waitbuild-menubar is running; restart it to use the new binary"
 fi

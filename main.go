@@ -73,6 +73,10 @@ var quiet bool
 var (
 	errFailed    = errors.New("one or more checks did not succeed")
 	errCancelled = errors.New("one or more checks were cancelled")
+	// errNoCI means that a repository without GitHub Actions workflows got
+	// no checks at all: it most likely has no CI, so there is no build to
+	// wait for.
+	errNoCI = errors.New("no checks appeared and the repository has no GitHub Actions workflows")
 )
 
 // printf writes progress output to stdout unless -quiet was given. It looks
@@ -220,6 +224,13 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 
 	rec := newRecorder(owner, repo, branch, sha)
 	checks, err := waitForChecks(ctx, client, circle, owner, repo, sha, interval, appearTimeout, hasWorkflows, rec.update)
+	if errors.Is(err, errNoCI) {
+		// Not a problem worth showing: forget the build instead of
+		// recording it as failed.
+		rec.remove()
+		printf("waitbuild: no checks appeared for %s within %s; %s/%s seems to have no CI\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
+		return nil
+	}
 	if err != nil {
 		rec.fail(err)
 		return err
@@ -296,7 +307,8 @@ var newGitHubClient = func(token string) (*github.Client, error) {
 // hasActionsWorkflows reports whether the repository has any GitHub Actions
 // workflows. A repository without them can still have a build, reported as
 // commit statuses (CircleCI) or check runs (other GitHub Apps), so this only
-// tunes the output and the message shown when nothing appears.
+// tunes the output and decides whether nothing appearing is an error (with
+// workflows) or means the repository has no CI (without).
 func hasActionsWorkflows(ctx context.Context, client *github.Client, owner, repo string) (bool, error) {
 	wfs, _, err := client.Actions.ListWorkflows(ctx, owner, repo, &github.ListOptions{PerPage: 1})
 	if err != nil {
@@ -327,11 +339,10 @@ func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI,
 		}
 
 		if len(checks) == 0 && time.Since(start) > appearTimeout {
-			hint := "was the commit pushed?"
 			if !hasWorkflows {
-				hint = "the repository has no GitHub Actions workflows; was the commit pushed and is CI configured?"
+				return nil, errNoCI
 			}
-			return nil, fmt.Errorf("no checks appeared for %s within %s (%s)", sha, appearTimeout, hint)
+			return nil, fmt.Errorf("no checks appeared for %s within %s (was the commit pushed?)", sha, appearTimeout)
 		}
 
 		if w := nameWidth(checks); w > width {

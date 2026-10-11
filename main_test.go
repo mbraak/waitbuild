@@ -791,11 +791,11 @@ func TestWaitForChecks(t *testing.T) {
 		}
 	})
 
-	t.Run("mentions the missing workflows when nothing appears", func(t *testing.T) {
+	t.Run("reports no CI when nothing appears without workflows", func(t *testing.T) {
 		f := newFakeAPI(t, &poll{})
 		_, err := waitForChecks(context.Background(), f.client(t), nil, "o", "r", "deadbeef", interval, 20*time.Millisecond, false, nil)
-		if err == nil || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
-			t.Fatalf("error = %v, want a hint about missing workflows", err)
+		if !errors.Is(err, errNoCI) {
+			t.Fatalf("error = %v, want errNoCI", err)
 		}
 	})
 
@@ -936,16 +936,25 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("repository without workflows and without checks gives up", func(t *testing.T) {
+	t.Run("repository without workflows and without checks has no CI", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
 		t.Chdir(dir)
+		stateDir := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
 		f := newFakeAPI(t, &poll{})
 		f.noWorkflows = true
 		useFakeAPI(t, f, "tok")
 
-		err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false)
-		if err == nil || !strings.Contains(err.Error(), "no checks appeared") || !strings.Contains(err.Error(), "no GitHub Actions workflows") {
-			t.Fatalf("run() = %v, want no-checks error mentioning the missing workflows", err)
+		out := captureStdout(t, func() {
+			if err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if !strings.Contains(out, "seems to have no CI") {
+			t.Errorf("output should say there is no CI:\n%s", out)
+		}
+		if entries, _ := os.ReadDir(stateDir); len(entries) != 0 {
+			t.Errorf("watch files left behind: %v", entries)
 		}
 	})
 

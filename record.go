@@ -72,6 +72,14 @@ func (r *recorder) fail(err error) {
 	r.save()
 }
 
+// remove deletes the watch file, so the build is not shown at all.
+func (r *recorder) remove() {
+	if r == nil {
+		return
+	}
+	_ = watch.Remove(r.dir, r.w)
+}
+
 func (r *recorder) save() {
 	r.w.Updated = time.Now()
 	_ = watch.Save(r.dir, r.w)

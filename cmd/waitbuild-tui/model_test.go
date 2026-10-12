@@ -143,12 +143,24 @@ func TestDismissAndClear(t *testing.T) {
 	next, _ := m.Update(m.load(nil)())
 	m = next.(model)
 
-	// A running build cannot be dismissed.
-	if _, cmd := press(m, "d"); cmd != nil {
-		t.Error("dismissing a running build returned a command")
+	// A running build is only stopped when d is pressed twice.
+	m1, cmd := press(m, "d")
+	if cmd != nil || m1.status == "" {
+		t.Errorf("first d on a running build: cmd = %v, status = %q; want no command and a question", cmd != nil, m1.status)
+	}
+	if _, cmd := press(m, "d", "down", "up", "d"); cmd != nil {
+		t.Error("d after another key stopped the running build")
+	}
+	// The running build belongs to the test process, which is not waitbuild,
+	// so stopping it fails and the build stays.
+	m1, cmd = press(m, "d", "d")
+	next, _ = m1.Update(cmd())
+	m1 = next.(model)
+	if len(m1.watches) != 3 || m1.status == "" {
+		t.Errorf("after stopping a process that is not waitbuild: %d builds, status %q; want 3 and an error", len(m1.watches), m1.status)
 	}
 
-	m, cmd := press(m, "down", "down", "d") // skip "Waiting for checks to appear…"
+	m, cmd = press(m, "down", "down", "d") // skip "Waiting for checks to appear…"
 	next, _ = m.Update(cmd())
 	m = next.(model)
 	if got := shas(m.watches); !reflect.DeepEqual(got, []string{"aaaaaaaaaa", "cccccccccc"}) {

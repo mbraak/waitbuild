@@ -26,7 +26,8 @@ type entry struct {
 }
 
 // item is a submenu entry. It opens url when set, dismisses the watch when
-// dismiss is set, and is shown disabled otherwise.
+// dismiss is set (stopping its waitbuild process if it is still running), and
+// is shown disabled otherwise.
 type item struct {
 	title   string
 	url     string
@@ -114,9 +115,11 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 	for _, c := range w.Checks {
 		e.items = append(e.items, item{title: checkTitle(c), url: c.URL})
 	}
-	if state != watch.Running {
-		e.items = append(e.items, item{title: "Dismiss", dismiss: &w})
+	dismiss := "Dismiss"
+	if state == watch.Running {
+		dismiss = "Stop and dismiss"
 	}
+	e.items = append(e.items, item{title: dismiss, dismiss: &w})
 	return e
 }
 

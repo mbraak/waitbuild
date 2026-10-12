@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -210,4 +212,43 @@ func Remove(dir string, w Watch) error {
 		return nil
 	}
 	return err
+}
+
+// processName returns the name of the program running as pid, or "" when there
+// is none. It is a variable so tests can stop a process that is not waitbuild.
+var processName = func(pid int) string {
+	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	// macOS prints the path of the binary, Linux only its name.
+	return filepath.Base(strings.TrimSpace(string(out)))
+}
+
+// stopTimeout is how long Dismiss waits for a stopped process to exit.
+const stopTimeout = 2 * time.Second
+
+// Dismiss deletes the file of w from dir, so the build is no longer shown.
+// When its waitbuild process is still running, Dismiss stops it first:
+// otherwise the process would write the file again after its next poll. The
+// process is only signalled when it is waitbuild, in case its pid was reused.
+func Dismiss(dir string, w Watch) error {
+	if w.State() == Running {
+		if name := processName(w.PID); name != "waitbuild" {
+			return fmt.Errorf("not stopping process %d: it is %q, not waitbuild", w.PID, name)
+		}
+		if err := syscall.Kill(w.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("stopping waitbuild (pid %d): %w", w.PID, err)
+		}
+		// Wait for the exit, so that a save in progress cannot recreate the
+		// file after it is removed.
+		deadline := time.Now().Add(stopTimeout)
+		for processAlive(w.PID) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("waitbuild (pid %d) did not exit after %s", w.PID, stopTimeout)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return Remove(dir, w)
 }

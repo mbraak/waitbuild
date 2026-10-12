@@ -28,13 +28,15 @@ var (
 	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
 )
 
-const helpText = "↑/↓ move · enter expand/open · o open on GitHub · d dismiss · c clear finished · q quit"
+const helpText = "↑/↓ move · enter expand/open · o open on GitHub · d dismiss (stops a running build) · c clear finished · q quit"
 
-// loadedMsg carries the watch files as read at now.
+// loadedMsg carries the watch files as read at now, and the status to show
+// when the change before the load failed.
 type loadedMsg struct {
 	watches []watch.Watch
 	err     error
 	now     time.Time
+	status  string
 }
 
 type tickMsg struct{}
@@ -84,6 +86,10 @@ type model struct {
 	err     error         // from the last load
 	status  string
 
+	// confirmStop is the key of the running build that d stops when it is
+	// pressed again right away.
+	confirmStop string
+
 	// toggled records builds the user expanded or collapsed. Other builds are
 	// expanded while they run.
 	toggled  map[string]bool
@@ -122,11 +128,14 @@ func (m model) tick() tea.Cmd {
 
 // load returns a command that runs change, if any, then rereads the watch
 // files and deletes those of builds that finished longer than keep ago.
-func (m model) load(change func()) tea.Cmd {
+func (m model) load(change func() error) tea.Cmd {
 	dir, keep := m.dir, m.keep
 	return func() tea.Msg {
+		var status string
 		if change != nil {
-			change()
+			if err := change(); err != nil {
+				status = err.Error()
+			}
 		}
 		watches, err := watch.Load(dir)
 		now := time.Now()
@@ -138,7 +147,7 @@ func (m model) load(change func()) tea.Cmd {
 			}
 			kept = append(kept, w)
 		}
-		return loadedMsg{watches: kept, err: err, now: now}
+		return loadedMsg{watches: kept, err: err, now: now, status: status}
 	}
 }
 
@@ -157,6 +166,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.spin()
 	case loadedMsg:
 		m.watches, m.err, m.now = msg.watches, msg.err, msg.now
+		if msg.status != "" {
+			m.status = msg.status
+		}
 		m.restoreSelection()
 		if !m.spinning && m.anyRunning() {
 			m.spinning = true
@@ -178,6 +190,9 @@ func (m model) key(key string) (tea.Model, tea.Cmd) {
 	if m.cursor < len(rows) {
 		cur = &rows[m.cursor]
 	}
+	// Stopping a running build needs two presses of d in a row.
+	confirmStop := m.confirmStop
+	m.confirmStop = ""
 	var cmd tea.Cmd
 	switch key {
 	case "q", "ctrl+c", "esc":
@@ -222,20 +237,25 @@ func (m model) key(key string) (tea.Model, tea.Cmd) {
 		}
 	case "d", "backspace", "delete":
 		if cur != nil {
-			if w := m.watches[cur.watch]; w.State() != watch.Running {
+			w := m.watches[cur.watch]
+			if w.State() == watch.Running && confirmStop != watchKey(w) {
+				m.confirmStop = watchKey(w)
+				m.status = "Press d again to stop waiting for this build and dismiss it"
+			} else {
 				dir := m.dir
-				cmd = m.load(func() { _ = watch.Remove(dir, w) })
+				cmd = m.load(func() error { return watch.Dismiss(dir, w) })
 			}
 		}
 	case "c":
 		dir := m.dir
-		cmd = m.load(func() {
+		cmd = m.load(func() error {
 			watches, _ := watch.Load(dir)
 			for _, w := range watches {
 				if w.State() != watch.Running {
 					_ = watch.Remove(dir, w)
 				}
 			}
+			return nil
 		})
 	}
 	m.cursor = max(0, min(m.cursor, len(m.rows())-1))

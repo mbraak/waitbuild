@@ -40,11 +40,12 @@ func TestBuildMenuIdle(t *testing.T) {
 }
 
 func TestBuildMenuRunning(t *testing.T) {
+	first := running("1111111111", now.Add(-3*time.Minute),
+		watch.Check{Name: "build", Status: "completed", Conclusion: "success", URL: "https://x/build"},
+		watch.Check{Name: "lint", Status: "in_progress", URL: "https://x/lint"},
+	)
 	m := buildMenu([]watch.Watch{
-		running("1111111111", now.Add(-3*time.Minute),
-			watch.Check{Name: "build", Status: "completed", Conclusion: "success", URL: "https://x/build"},
-			watch.Check{Name: "lint", Status: "in_progress", URL: "https://x/lint"},
-		),
+		first,
 		running("2222222222", now.Add(-10*time.Second)),
 		finished("3333333333", false, now.Add(-time.Hour)),
 	}, now)
@@ -62,6 +63,7 @@ func TestBuildMenuRunning(t *testing.T) {
 		{title: "Open on GitHub", url: "https://github.com/o/r/commit/1111111111/checks"},
 		{title: "✔ build — success", url: "https://x/build"},
 		{title: "⏳ lint — in_progress", url: "https://x/lint"},
+		{title: "Stop and dismiss", dismiss: &first},
 	}
 	if !reflect.DeepEqual(m.entries[0].items, wantItems) {
 		t.Errorf("items = %+v, want %+v", m.entries[0].items, wantItems)
@@ -69,7 +71,7 @@ func TestBuildMenuRunning(t *testing.T) {
 	if want := "⏳ o/r · main · 2222222 — 0/0, just started"; m.entries[1].title != want {
 		t.Errorf("entry title = %q, want %q", m.entries[1].title, want)
 	}
-	if got := titles(m.entries[1].items); !reflect.DeepEqual(got, []string{"Open on GitHub", "Waiting for checks to appear…"}) {
+	if got := titles(m.entries[1].items); !reflect.DeepEqual(got, []string{"Open on GitHub", "Waiting for checks to appear…", "Stop and dismiss"}) {
 		t.Errorf("items without checks = %v", got)
 	}
 }

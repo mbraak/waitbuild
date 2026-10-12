@@ -100,7 +100,10 @@ commit statuses and check runs only. When nothing at all is reported within
 bar: ⏳ with the number of running builds, or ✅ / ❌ / 🚫 (cancelled) for the
 most recent result. Each build has a submenu with its checks, and clicking a
 check opens it on GitHub. Finished builds stay listed until you dismiss them, use
-"Clear finished", or they are older than `-keep` (24 hours by default).
+"Clear finished", or they are older than `-keep` (24 hours by default). A
+running build has "Stop and dismiss" instead: it stops the waitbuild process
+that waits for the build, so you get no notification for it, and removes the
+build from the menu. The build itself keeps running on GitHub.
 
 Every waitbuild process records its build in a JSON file in
 `~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).
@@ -169,8 +172,10 @@ waitbuild-tui
 
 Running builds are expanded to show their checks. Keys: ↑/↓ (or j/k) to move,
 enter to expand a build or open a check on GitHub, ←/→ to collapse or expand,
-`o` to open the selected build or check, `d` to dismiss a finished build, `c`
-to clear every finished build, `q` to quit. Finished builds older than `-keep`
+`o` to open the selected build or check, `d` to dismiss a build, `c` to clear
+every finished build, `q` to quit. On a running build `d` asks first: pressing
+it again stops the waitbuild process that waits for the build, as "Stop and
+dismiss" does in the menu bar app. Finished builds older than `-keep`
 (24 hours by default) are removed, as in the menu bar app.
 
 Unlike the menu bar app it does not check failed builds for a rerun on GitHub,

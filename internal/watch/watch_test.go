@@ -2,6 +2,7 @@ package watch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -98,6 +99,84 @@ func TestProcessAlive(t *testing.T) {
 	}
 	if processAlive(0) || processAlive(-1) {
 		t.Error("invalid PID reported as running")
+	}
+}
+
+// startSleep starts a process that runs until it is stopped, and reaps it
+// when it exits so that it does not linger as a zombie.
+func startSleep(t *testing.T) (pid int, exited <-chan struct{}) {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+	return cmd.Process.Pid, done
+}
+
+func TestDismissStopsWaitbuild(t *testing.T) {
+	orig := processName
+	t.Cleanup(func() { processName = orig })
+	processName = func(int) string { return "waitbuild" }
+
+	dir := t.TempDir()
+	pid, exited := startSleep(t)
+	w := Watch{PID: pid, Owner: "o", Repo: "r", SHA: "aaaaaaaaaa"}
+	if err := Save(dir, w); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Dismiss(dir, w); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Error("the process is still running")
+	}
+	if got, _ := Load(dir); len(got) != 0 {
+		t.Errorf("after Dismiss Load = %+v, want nothing", got)
+	}
+}
+
+func TestDismissLeavesOtherProcesses(t *testing.T) {
+	dir := t.TempDir()
+	pid, exited := startSleep(t) // its pid could have been reused by sleep
+	w := Watch{PID: pid, Owner: "o", Repo: "r", SHA: "aaaaaaaaaa"}
+	if err := Save(dir, w); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Dismiss(dir, w); err == nil {
+		t.Error("Dismiss of a process that is not waitbuild succeeded")
+	}
+	select {
+	case <-exited:
+		t.Error("the process was stopped")
+	default:
+	}
+	if got, _ := Load(dir); len(got) != 1 {
+		t.Errorf("after a failed Dismiss Load = %+v, want the watch", got)
+	}
+}
+
+func TestDismissFinished(t *testing.T) {
+	dir := t.TempDir()
+	w := Watch{PID: os.Getpid(), Owner: "o", Repo: "r", SHA: "aaaaaaaaaa", Finished: true}
+	if err := Save(dir, w); err != nil {
+		t.Fatal(err)
+	}
+	// The process is alive, but the build is finished: it is not stopped.
+	if err := Dismiss(dir, w); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Load(dir); len(got) != 0 {
+		t.Errorf("after Dismiss Load = %+v, want nothing", got)
 	}
 }
 

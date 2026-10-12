@@ -8,7 +8,8 @@
 // clicking a check opens it on GitHub.
 //
 // Finished builds stay in the menu until they are dismissed, cleared or older
-// than -keep.
+// than -keep. A running build can be dismissed too, which stops its waitbuild
+// process.
 //
 // A build that failed may be rerun on GitHub. To notice that, the app starts
 // `waitbuild -if-rerun` for every build that did not succeed once per
@@ -136,7 +137,9 @@ func (a *app) render(m menu) {
 			case it.dismiss != nil:
 				w := *it.dismiss
 				onClick(sub, func() {
-					_ = watch.Remove(a.dir, w)
+					if err := watch.Dismiss(a.dir, w); err != nil {
+						fmt.Fprintln(os.Stderr, "waitbuild-menubar:", err)
+					}
 					a.requestRefresh()
 				})
 			default:

@@ -7,7 +7,7 @@
 // can be opened on GitHub.
 //
 // Finished builds stay listed until they are dismissed, cleared or older than
-// -keep. Unlike waitbuild-menubar, it does not check failed builds for reruns
+// -keep. Dismissing a running build stops its waitbuild process. Unlike waitbuild-menubar, it does not check failed builds for reruns
 // on GitHub.
 package main
 

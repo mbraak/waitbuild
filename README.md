@@ -92,7 +92,12 @@ status in state `failure` or `error` counts as a failed check.
 
 A repository without GitHub Actions workflows is fine: waitbuild then waits for
 commit statuses and check runs only. When nothing at all is reported within
-`-appear-timeout` (3 minutes by default) it gives up.
+`-appear-timeout` (3 minutes by default) it gives up. That is only reported as
+an error when GitHub does not have the commit (was it pushed?), or when the
+commit is part of a pull request. Otherwise the repository has no CI, or its
+workflows do not run for this push, for example because they only run for pull
+requests: waitbuild exits with 0 and the build is not shown in the menu bar
+app.
 
 ## Menu bar app
 

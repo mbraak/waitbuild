@@ -101,6 +101,7 @@ func TestRunRecordsWatch(t *testing.T) {
 		dir, _, sha := initRepo(t, remote)
 		t.Chdir(dir)
 		f := newFakeAPI(t, &poll{})
+		f.noCommit = true // without a pull request either, the build would be forgotten
 		useFakeAPI(t, f, "tok")
 
 		captureStdout(t, func() {

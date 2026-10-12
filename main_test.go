@@ -961,26 +961,36 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("a commit without checks and without a pull request is forgotten", func(t *testing.T) {
-		dir, _, _ := initRepo(t, remote)
-		t.Chdir(dir)
-		stateDir := t.TempDir()
-		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
-		f := newFakeAPI(t, &poll{})
-		useFakeAPI(t, f, "tok")
+	for _, tt := range []struct {
+		name  string
+		pulls []*github.PullRequest
+	}{
+		{"without a pull request", nil},
+		// The workflows only run on pushes to another branch.
+		{"with a pull request", []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr("https://github.com/mbraak/waitbuild/pull/3")}}},
+	} {
+		t.Run("a pushed commit without checks "+tt.name+" is forgotten", func(t *testing.T) {
+			dir, _, _ := initRepo(t, remote)
+			t.Chdir(dir)
+			stateDir := t.TempDir()
+			t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+			f := newFakeAPI(t, &poll{})
+			f.pulls = tt.pulls
+			useFakeAPI(t, f, "tok")
 
-		out := captureStdout(t, func() {
-			if err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
-				t.Errorf("run() = %v, want nil", err)
+			out := captureStdout(t, func() {
+				if err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
+					t.Errorf("run() = %v, want nil", err)
+				}
+			})
+			if !strings.Contains(out, "probably do not run for it") {
+				t.Errorf("output should say the workflows do not run:\n%s", out)
+			}
+			if entries, _ := os.ReadDir(stateDir); len(entries) != 0 {
+				t.Errorf("watch files left behind: %v", entries)
 			}
 		})
-		if !strings.Contains(out, "it has no pull request") {
-			t.Errorf("output should mention the missing pull request:\n%s", out)
-		}
-		if entries, _ := os.ReadDir(stateDir); len(entries) != 0 {
-			t.Errorf("watch files left behind: %v", entries)
-		}
-	})
+	}
 
 	t.Run("a commit without checks that GitHub does not have is an error", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)

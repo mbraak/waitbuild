@@ -316,6 +316,7 @@ type fakeAPI struct {
 	mu          sync.Mutex
 	polls       []*poll
 	pulls       []*github.PullRequest // served for .../commits/<sha>/pulls
+	noCommit    bool                  // answer .../commits/<sha>/pulls as for a commit GitHub does not have
 	noWorkflows bool                  // answer .../actions/workflows with an empty list
 	requests    []*http.Request
 	served      map[string]int // listing endpoint suffix -> requests answered
@@ -337,6 +338,8 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/pulls") && f.noCommit:
+		http.Error(w, `{"message": "No commit found for SHA"}`, http.StatusUnprocessableEntity)
 	case strings.HasSuffix(r.URL.Path, "/pulls"):
 		_ = json.NewEncoder(w).Encode(f.pulls)
 	case strings.HasSuffix(r.URL.Path, "/actions/workflows"):
@@ -955,6 +958,46 @@ func TestRun(t *testing.T) {
 		}
 		if entries, _ := os.ReadDir(stateDir); len(entries) != 0 {
 			t.Errorf("watch files left behind: %v", entries)
+		}
+	})
+
+	t.Run("a commit without checks and without a pull request is forgotten", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		stateDir := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+		f := newFakeAPI(t, &poll{})
+		useFakeAPI(t, f, "tok")
+
+		out := captureStdout(t, func() {
+			if err := run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		if !strings.Contains(out, "it has no pull request") {
+			t.Errorf("output should mention the missing pull request:\n%s", out)
+		}
+		if entries, _ := os.ReadDir(stateDir); len(entries) != 0 {
+			t.Errorf("watch files left behind: %v", entries)
+		}
+	})
+
+	t.Run("a commit without checks that GitHub does not have is an error", func(t *testing.T) {
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		stateDir := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+		f := newFakeAPI(t, &poll{})
+		f.noCommit = true
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		captureStdout(t, func() { err = run("", "", "", false, interval, 20*time.Millisecond, time.Minute, false) })
+		if !errors.Is(err, errNoChecks) || !strings.Contains(err.Error(), "was the commit pushed?") {
+			t.Fatalf("run() = %v, want errNoChecks", err)
+		}
+		if entries, _ := os.ReadDir(stateDir); len(entries) != 1 {
+			t.Errorf("watch files = %v, want the failed build", entries)
 		}
 	})
 

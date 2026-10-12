@@ -77,6 +77,9 @@ var (
 	// no checks at all: it most likely has no CI, so there is no build to
 	// wait for.
 	errNoCI = errors.New("no checks appeared and the repository has no GitHub Actions workflows")
+	// errNoChecks means that no check appeared for the commit in a repository
+	// with workflows.
+	errNoChecks = errors.New("no checks appeared")
 )
 
 // printf writes progress output to stdout unless -quiet was given. It looks
@@ -231,6 +234,14 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("waitbuild: no checks appeared for %s within %s; %s/%s seems to have no CI\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
 		return nil
 	}
+	if errors.Is(err, errNoChecks) && withoutPullRequest(ctx, client, owner, repo, sha) {
+		// The workflows did not run for this push, most likely because they
+		// only run for pull requests (or for other branches). Nothing to show
+		// either.
+		rec.remove()
+		printf("waitbuild: no checks appeared for %s within %s; it has no pull request, so the workflows probably do not run for it\n", sha[:min(10, len(sha))], appearTimeout)
+		return nil
+	}
 	if err != nil {
 		rec.fail(err)
 		return err
@@ -342,7 +353,7 @@ func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI,
 			if !hasWorkflows {
 				return nil, errNoCI
 			}
-			return nil, fmt.Errorf("no checks appeared for %s within %s (was the commit pushed?)", sha, appearTimeout)
+			return nil, fmt.Errorf("%w for %s within %s (was the commit pushed?)", errNoChecks, sha, appearTimeout)
 		}
 
 		if w := nameWidth(checks); w > width {
@@ -621,6 +632,15 @@ func pullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha
 		}
 	}
 	return prs[0].GetHTMLURL()
+}
+
+// withoutPullRequest reports whether GitHub has the commit sha and no pull
+// request contains it. GitHub answers with an error for a commit it does not
+// have, for example one that was not pushed; that, or any other failure,
+// gives false.
+func withoutPullRequest(ctx context.Context, client *github.Client, owner, repo, sha string) bool {
+	prs, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 1})
+	return err == nil && len(prs) == 0
 }
 
 // notifyURL picks the page a notification should open: the commit's pull

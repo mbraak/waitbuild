@@ -96,7 +96,9 @@ commit statuses and check runs only. When nothing at all is reported within
 an error when GitHub does not have the commit (was it pushed?). Otherwise the
 repository has no CI, or its workflows do not run for this push, for example
 because they only run for pull requests or on pushes to `master`: waitbuild
-exits with 0 and the build is not shown in the menu bar app.
+exits with 0 and the build is not shown in the menu bar app. The menu bar app
+only shows a build once its first check appears, so a push without CI never
+shows up as running.
 
 ## Menu bar app
 

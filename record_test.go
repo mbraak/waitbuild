@@ -123,6 +123,27 @@ func TestRunRecordsWatch(t *testing.T) {
 	})
 }
 
+func TestRecorderWaitsForChecks(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("WAITBUILD_STATE_DIR", state)
+
+	r := newRecorder("mbraak", "waitbuild", "feature", "abc123")
+	r.update(nil)
+	if watches, err := watch.Load(state); err != nil || len(watches) != 0 {
+		t.Fatalf("recorded %+v (err %v) before any check appeared, want nothing", watches, err)
+	}
+
+	r.update([]check{{name: "build", status: "queued"}})
+	if w := loadOnly(t, state); len(w.Checks) != 1 || w.State() != watch.Running {
+		t.Errorf("watch = %+v, want a running build with one check", w)
+	}
+
+	r.update(nil) // checks disappearing again keeps the build shown
+	if w := loadOnly(t, state); len(w.Checks) != 0 {
+		t.Errorf("checks = %+v, want none", w.Checks)
+	}
+}
+
 func TestNilRecorder(t *testing.T) {
 	var r *recorder
 	r.update([]check{{name: "build"}})

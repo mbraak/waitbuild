@@ -12,9 +12,15 @@ import (
 // waitbuild-menubar app can show the build. Recording is best effort: when
 // the file cannot be written the build is still waited for and reported.
 // A nil recorder records nothing.
+//
+// The file is only written once a check appears, or when waitbuild gives up:
+// until then it is unknown whether the commit has a build at all (the
+// workflows may not run for it), so the menu bar app should not show it as
+// pending.
 type recorder struct {
-	dir string
-	w   watch.Watch
+	dir   string
+	w     watch.Watch
+	saved bool // the watch file has been written
 }
 
 func newRecorder(owner, repo, branch, sha string) *recorder {
@@ -33,7 +39,6 @@ func newRecorder(owner, repo, branch, sha string) *recorder {
 		Started: now,
 		Updated: now,
 	}}
-	r.save()
 	return r
 }
 
@@ -46,7 +51,9 @@ func (r *recorder) update(checks []check) {
 	for i, c := range checks {
 		r.w.Checks[i] = watch.Check{Name: c.name, Status: c.status, Conclusion: c.conclusion, URL: c.url}
 	}
-	r.save()
+	if len(checks) > 0 || r.saved {
+		r.save()
+	}
 }
 
 // finish records that every check completed; url is the page to open.
@@ -82,5 +89,6 @@ func (r *recorder) remove() {
 
 func (r *recorder) save() {
 	r.w.Updated = time.Now()
+	r.saved = true
 	_ = watch.Save(r.dir, r.w)
 }

@@ -24,7 +24,9 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,9 +313,14 @@ func nameWidth(checks []check) int {
 	return width
 }
 
+// requestTimeout bounds every API request. Without it a request that was in
+// flight when the machine went to sleep can hang until the overall timeout,
+// while the menu bar app keeps showing the build as running.
+const requestTimeout = 30 * time.Second
+
 // newGitHubClient is a variable so tests can point the client at a fake server.
 var newGitHubClient = func(token string) (*github.Client, error) {
-	return github.NewClient(github.WithAuthToken(token))
+	return github.NewClient(github.WithAuthToken(token), github.WithTimeout(requestTimeout))
 }
 
 // hasActionsWorkflows reports whether the repository has any GitHub Actions
@@ -343,6 +350,14 @@ func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI,
 
 	for {
 		checks, err := listChecks(ctx, client, circle, owner, repo, sha)
+		if err != nil && ctx.Err() == nil && transient(err) {
+			// Keep the last state and try again on the next poll.
+			printf("waitbuild: polling failed, retrying: %v\n", err)
+			if err := sleep(ctx, interval); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -380,12 +395,28 @@ func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI,
 			settledOnce = false
 		}
 
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("gave up waiting: %w", ctx.Err())
-		case <-time.After(interval):
+		if err := sleep(ctx, interval); err != nil {
+			return nil, err
 		}
 	}
+}
+
+// sleep waits for d, or returns an error when ctx expires first.
+func sleep(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("gave up waiting: %w", ctx.Err())
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// transient reports whether err is a network failure, such as a request
+// timing out or a connection dropped while the machine slept, that the next
+// poll will probably not run into.
+func transient(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // listChecks gathers everything GitHub knows about the commit's CI: Actions

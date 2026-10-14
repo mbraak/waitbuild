@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -823,6 +824,33 @@ func TestWaitForChecks(t *testing.T) {
 		_, err := wait(f, context.Background(), appear)
 		if err == nil || !strings.Contains(err.Error(), "listing workflow runs") {
 			t.Fatalf("error = %v, want listing error", err)
+		}
+	})
+
+	t.Run("retries a request that timed out", func(t *testing.T) {
+		f := newFakeAPI(t, runsOnly(done(1, "build", "success")))
+		var hung atomic.Bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The first poll never gets an answer, as after the machine slept.
+			if strings.HasSuffix(r.URL.Path, "/actions/runs") && hung.CompareAndSwap(false, true) {
+				<-r.Context().Done()
+				return
+			}
+			f.handle(w, r)
+		}))
+		t.Cleanup(srv.Close)
+		base := srv.URL + "/"
+		client, err := github.NewClient(github.WithURLs(&base, &base), github.WithTimeout(50*time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		checks, err := waitForChecks(context.Background(), client, nil, "o", "r", "sha", interval, appear, true, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(checks), []string{"build"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
 		}
 	})
 }

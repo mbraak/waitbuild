@@ -78,7 +78,8 @@ var (
 	// wait for.
 	errNoCI = errors.New("no checks appeared and the repository has no GitHub Actions workflows")
 	// errNoChecks means that no check appeared for the commit in a repository
-	// with workflows.
+	// with workflows. When GitHub has the commit, its workflows simply do not
+	// run for it (they may only run on other branches or events).
 	errNoChecks = errors.New("no checks appeared")
 )
 
@@ -234,12 +235,12 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("waitbuild: no checks appeared for %s within %s; %s/%s seems to have no CI\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
 		return nil
 	}
-	if errors.Is(err, errNoChecks) && withoutPullRequest(ctx, client, owner, repo, sha) {
-		// The workflows did not run for this push, most likely because they
-		// only run for pull requests (or for other branches). Nothing to show
-		// either.
+	if errors.Is(err, errNoChecks) && commitOnGitHub(ctx, client, owner, repo, sha) {
+		// The commit was pushed but no workflow ran for it, for example
+		// because they only run for pull requests or on other branches.
+		// Nothing to show either.
 		rec.remove()
-		printf("waitbuild: no checks appeared for %s within %s; it has no pull request, so the workflows probably do not run for it\n", sha[:min(10, len(sha))], appearTimeout)
+		printf("waitbuild: no checks appeared for %s within %s; the workflows of %s/%s probably do not run for it\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
 		return nil
 	}
 	if err != nil {
@@ -634,13 +635,12 @@ func pullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha
 	return prs[0].GetHTMLURL()
 }
 
-// withoutPullRequest reports whether GitHub has the commit sha and no pull
-// request contains it. GitHub answers with an error for a commit it does not
-// have, for example one that was not pushed; that, or any other failure,
-// gives false.
-func withoutPullRequest(ctx context.Context, client *github.Client, owner, repo, sha string) bool {
-	prs, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 1})
-	return err == nil && len(prs) == 0
+// commitOnGitHub reports whether GitHub has the commit sha. Listing its pull
+// requests answers with an error for a commit GitHub does not have, for
+// example one that was not pushed; that, or any other failure, gives false.
+func commitOnGitHub(ctx context.Context, client *github.Client, owner, repo, sha string) bool {
+	_, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 1})
+	return err == nil
 }
 
 // notifyURL picks the page a notification should open: the commit's pull

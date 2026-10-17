@@ -56,11 +56,14 @@ func TestRerunWatcherChecksBuildsThatDidNotSucceed(t *testing.T) {
 	succeeded.Repo = "r4"
 	busy := running("eee", now)
 	busy.Repo = "r5"
-	watches := []watch.Watch{failed, errored, stopped, succeeded, busy}
+	noChecks := finished("fff", false, now)
+	noChecks.Repo = "r6"
+	noChecks.CreatePullRequestURL = "https://github.com/o/r6/compare/feature?expand=1"
+	watches := []watch.Watch{failed, errored, stopped, succeeded, busy, noChecks}
 
 	r.check(watches, now, func() {})
-	if f.count() != 3 {
-		t.Fatalf("started %d checks, want 3 (failed, errored, stopped): %v", f.count(), f.args)
+	if f.count() != 4 {
+		t.Fatalf("started %d checks, want 4 (failed, errored, stopped, no checks): %v", f.count(), f.args)
 	}
 	want := []string{"-quiet", "-notify", "-if-rerun", "-repo", "o/r", "-sha", "aaa", "-branch", "feature"}
 	if !reflect.DeepEqual(f.args[0], want) {

@@ -71,6 +71,18 @@ func (r *recorder) finish(ok bool, url, createPRURL string) {
 	r.save()
 }
 
+// noChecks records that no check ran for the commit, but that a pull request
+// can be created at createPRURL, which may start the workflows.
+func (r *recorder) noChecks(createPRURL string) {
+	if r == nil {
+		return
+	}
+	r.w.Finished = true
+	r.w.Checks = nil
+	r.w.CreatePullRequestURL = createPRURL
+	r.save()
+}
+
 // fail records that waitbuild gave up waiting.
 func (r *recorder) fail(err error) {
 	if r == nil {

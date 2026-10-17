@@ -17,6 +17,7 @@ var stateIcons = map[watch.State]string{
 	watch.Cancelled: "🚫",
 	watch.Error:     "⚠️",
 	watch.Stopped:   "⏹",
+	watch.NoChecks:  "⚪",
 }
 
 var (
@@ -296,6 +297,8 @@ func (m model) rows() []row {
 			info = append(info, "Gave up: "+w.Error)
 		case watch.Stopped:
 			info = append(info, "waitbuild exited before the build finished")
+		case watch.NoChecks:
+			info = append(info, "No checks ran; they may only run for pull requests")
 		}
 		if len(w.Checks) == 0 && state == watch.Running {
 			info = append(info, "Waiting for checks to appear…")

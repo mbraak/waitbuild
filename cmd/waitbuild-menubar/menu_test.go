@@ -100,7 +100,7 @@ func TestBuildMenuFinished(t *testing.T) {
 }
 
 func TestBuildMenuCreatePullRequest(t *testing.T) {
-	w := finished("aaaaaaaaaa", true, now)
+	w := finished("aaaaaaaaaa", true, now, watch.Check{Name: "build", Status: "completed", Conclusion: "success"})
 	w.CreatePullRequestURL = "https://github.com/o/r/compare/feature?expand=1"
 	want := []item{
 		{title: "Open on GitHub", url: w.URL},
@@ -108,6 +108,19 @@ func TestBuildMenuCreatePullRequest(t *testing.T) {
 	}
 	if got := buildMenu([]watch.Watch{w}, now).entries[0].items[:2]; !reflect.DeepEqual(got, want) {
 		t.Errorf("items = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildMenuNoChecks(t *testing.T) {
+	w := finished("aaaaaaaaaa", false, now.Add(-5*time.Minute))
+	w.CreatePullRequestURL = "https://github.com/o/r/compare/feature?expand=1"
+	e := buildMenu([]watch.Watch{w}, now).entries[0]
+	if want := "⚪ o/r · feature · aaaaaaa — 5m ago"; e.title != want {
+		t.Errorf("entry title = %q, want %q", e.title, want)
+	}
+	want := []string{"Open on GitHub", "Create pull request", "No checks ran; they may only run for pull requests", "Dismiss"}
+	if got := titles(e.items); !reflect.DeepEqual(got, want) {
+		t.Errorf("items = %v, want %v", got, want)
 	}
 }
 

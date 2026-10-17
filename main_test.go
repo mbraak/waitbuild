@@ -1000,7 +1000,8 @@ func TestRun(t *testing.T) {
 		name  string
 		pulls []*github.PullRequest
 	}{
-		{"without a pull request", nil},
+		// On the default branch there is no pull request to create.
+		{"on the default branch", nil},
 		// The workflows only run on pushes to another branch.
 		{"with a pull request", []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr("https://github.com/mbraak/waitbuild/pull/3")}}},
 	} {
@@ -1011,6 +1012,7 @@ func TestRun(t *testing.T) {
 			t.Setenv("WAITBUILD_STATE_DIR", stateDir)
 			f := newFakeAPI(t, &poll{})
 			f.pulls = tt.pulls
+			f.defaultBranch = "main"
 			useFakeAPI(t, f, "tok")
 
 			out := captureStdout(t, func() {
@@ -1026,6 +1028,30 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a pushed commit without checks or pull request is recorded", func(t *testing.T) {
+		dir, _, sha := initRepo(t, remote)
+		t.Chdir(dir)
+		stateDir := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+		f := newFakeAPI(t, &poll{})
+		f.defaultBranch = "main"
+		useFakeAPI(t, f, "tok")
+
+		out := captureStdout(t, func() {
+			if err := run("", "feature", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		want := "https://github.com/mbraak/waitbuild/compare/feature?expand=1"
+		if !strings.Contains(out, "create a pull request") || !strings.Contains(out, want) {
+			t.Errorf("output should point to creating a pull request:\n%s", out)
+		}
+		w := loadOnly(t, stateDir)
+		if w.SHA != sha || w.State() != watch.NoChecks || w.CreatePullRequestURL != want {
+			t.Errorf("watch = %+v, want a build without checks that links to %s", w, want)
+		}
+	})
 
 	t.Run("a commit without checks that GitHub does not have is an error", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)

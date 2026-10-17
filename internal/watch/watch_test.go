@@ -77,6 +77,7 @@ func TestState(t *testing.T) {
 		{"succeeded", Watch{PID: 7, Finished: true, OK: true}, Success},
 		{"failed", Watch{PID: 42, Finished: true}, Failure},
 		{"gave up", Watch{PID: 7, Finished: true, Error: "timeout"}, Error},
+		{"no checks", Watch{PID: 7, Finished: true, CreatePullRequestURL: "u"}, NoChecks},
 		{"cancelled", Watch{PID: 7, Finished: true, Checks: []Check{
 			{Status: "completed", Conclusion: "success"},
 			{Status: "completed", Conclusion: "cancelled"},

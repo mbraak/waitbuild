@@ -41,6 +41,7 @@ var stateIcons = map[watch.State]string{
 	watch.Cancelled: "🚫",
 	watch.Error:     "⚠️",
 	watch.Stopped:   "⏹",
+	watch.NoChecks:  "⚪",
 }
 
 // idleTitle is shown in the menu bar when no builds are recorded.
@@ -111,6 +112,8 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 		e.items = append(e.items, item{title: "Gave up: " + w.Error})
 	case watch.Stopped:
 		e.items = append(e.items, item{title: "waitbuild exited before the build finished"})
+	case watch.NoChecks:
+		e.items = append(e.items, item{title: "No checks ran; they may only run for pull requests"})
 	}
 	if len(w.Checks) == 0 && state == watch.Running {
 		e.items = append(e.items, item{title: "Waiting for checks to appear…"})

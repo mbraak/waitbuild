@@ -60,11 +60,11 @@ func findWaitbuild() (string, error) {
 func watchKey(w watch.Watch) string { return repoKey(w) + "@" + w.SHA }
 
 // rerunnable reports whether w is worth checking for a rerun: it finished
-// without success (failed or cancelled), or waitbuild stopped before it
-// finished.
+// without success (failed or cancelled), waitbuild stopped before it
+// finished, or no checks ran (creating a pull request may start them).
 func rerunnable(w watch.Watch) bool {
 	switch w.State() {
-	case watch.Failure, watch.Cancelled, watch.Error, watch.Stopped:
+	case watch.Failure, watch.Cancelled, watch.Error, watch.Stopped, watch.NoChecks:
 		return true
 	}
 	return false

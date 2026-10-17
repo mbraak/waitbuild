@@ -96,7 +96,10 @@ commit statuses and check runs only. When nothing at all is reported within
 an error when GitHub does not have the commit (was it pushed?). Otherwise the
 repository has no CI, or its workflows do not run for this push, for example
 because they only run for pull requests or on pushes to `master`: waitbuild
-exits with 0 and the build is not shown in the menu bar app. The menu bar app
+exits with 0 and the build is not shown in the menu bar app. The exception is a
+commit on a branch other than the default branch that is in no pull request:
+it is shown as ⚪ (no checks) with "Create pull request", since creating one may
+start the workflows. The menu bar app
 only shows a build once its first check appears, so a push without CI never
 shows up as running.
 
@@ -111,14 +114,22 @@ running build has "Stop and dismiss" instead: it stops the waitbuild process
 that waits for the build, so you get no notification for it, and removes the
 build from the menu. The build itself keeps running on GitHub.
 
+When a finished build's commit is in no pull request and its branch is not the
+repository's default branch, the submenu has "Create pull request", which opens
+GitHub's page for opening one. waitbuild checks this when the build finishes.
+A build without checks (⚪) is checked once a minute like a failed one (see
+below), so it shows as running as soon as the pull request starts the
+workflows. Otherwise the item stays until the build is dismissed, even when a
+pull request is created elsewhere afterwards.
+
 Every waitbuild process records its build in a JSON file in
 `~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).
 The menu bar app reads these files, so it shows builds started from any
 terminal or git hook, and builds started before the app was launched.
 
 A build that failed can be rerun on GitHub. Once a minute (`-rerun-interval`)
-the app runs `waitbuild -if-rerun` for every build that failed, gave up or
-was stopped. That call exits right away while the build is unchanged. When a
+the app runs `waitbuild -if-rerun` for every build that failed, gave up, was
+stopped or had no checks. That call exits right away while the build is unchanged. When a
 check is queued or running again, or every check now succeeds because the
 rerun already finished, it waits for the build like any other waitbuild
 process: the menu shows the new result and you get a notification. The app looks for `waitbuild` next to its own

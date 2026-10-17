@@ -27,6 +27,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -237,13 +238,25 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("waitbuild: no checks appeared for %s within %s; %s/%s seems to have no CI\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
 		return nil
 	}
-	if errors.Is(err, errNoChecks) && commitOnGitHub(ctx, client, owner, repo, sha) {
-		// The commit was pushed but no workflow ran for it, for example
-		// because they only run for pull requests or on other branches.
-		// Nothing to show either.
-		rec.remove()
-		printf("waitbuild: no checks appeared for %s within %s; the workflows of %s/%s probably do not run for it\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
-		return nil
+	if errors.Is(err, errNoChecks) {
+		// Listing the pull requests of a commit fails when GitHub does not
+		// have it, for example because it was not pushed.
+		if prURL, prErr := findPullRequest(ctx, client, owner, repo, sha); prErr == nil {
+			// The commit was pushed but no workflow ran for it, for
+			// example because they only run for pull requests or on
+			// other branches. Only show it when a pull request can be
+			// created, which may start them.
+			if prURL == "" {
+				if createPRURL := createPullRequestURL(ctx, client, owner, repo, circleBranch); createPRURL != "" {
+					rec.noChecks(createPRURL)
+					printf("waitbuild: no checks appeared for %s within %s; create a pull request to run the workflows of %s/%s: %s\n", sha[:min(10, len(sha))], appearTimeout, owner, repo, createPRURL)
+					return nil
+				}
+			}
+			rec.remove()
+			printf("waitbuild: no checks appeared for %s within %s; the workflows of %s/%s probably do not run for it\n", sha[:min(10, len(sha))], appearTimeout, owner, repo)
+			return nil
+		}
 	}
 	if err != nil {
 		rec.fail(err)
@@ -266,8 +279,13 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
-	url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
-	rec.finish(ok, url)
+	prURL, prErr := findPullRequest(ctx, client, owner, repo, sha)
+	url := notifyURL(prURL, owner, repo, sha, checks)
+	createPRURL := ""
+	if prErr == nil && prURL == "" {
+		createPRURL = createPullRequestURL(ctx, client, owner, repo, circleBranch)
+	}
+	rec.finish(ok, url, createPRURL)
 	// A cancelled build (usually superseded by a newer push) needs no
 	// attention, so it gets no notification.
 	if notify && (ok || failed) {
@@ -654,24 +672,41 @@ func printPullRequest(sha string) error {
 // request or the lookup fails; the notification then falls back to another
 // page, so a lookup failure is never fatal.
 func pullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha string) string {
+	url, _ := findPullRequest(ctx, client, owner, repo, sha)
+	return url
+}
+
+// findPullRequest is pullRequestURL, but also returns the error of a failed
+// lookup, to tell it apart from a commit without a pull request.
+func findPullRequest(ctx context.Context, client *github.Client, owner, repo, sha string) (string, error) {
 	prs, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 100})
 	if err != nil || len(prs) == 0 {
-		return ""
+		return "", err
 	}
 	for _, pr := range prs {
 		if pr.GetState() == "open" && pr.GetHTMLURL() != "" {
-			return pr.GetHTMLURL()
+			return pr.GetHTMLURL(), nil
 		}
 	}
-	return prs[0].GetHTMLURL()
+	return prs[0].GetHTMLURL(), nil
 }
 
-// commitOnGitHub reports whether GitHub has the commit sha. Listing its pull
-// requests answers with an error for a commit GitHub does not have, for
-// example one that was not pushed; that, or any other failure, gives false.
-func commitOnGitHub(ctx context.Context, client *github.Client, owner, repo, sha string) bool {
-	_, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 1})
-	return err == nil
+// createPullRequestURL returns the GitHub page that creates a pull request
+// for branch, or "" when there is nothing to create one from: the branch is
+// unknown or the repository's default branch, or looking that up failed.
+func createPullRequestURL(ctx context.Context, client *github.Client, owner, repo, branch string) string {
+	if branch == "" || branch == "HEAD" {
+		return ""
+	}
+	r, _, err := client.Repositories.Get(ctx, owner, repo)
+	if err != nil || branch == r.GetDefaultBranch() {
+		return ""
+	}
+	segments := strings.Split(branch, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/compare/%s?expand=1", owner, repo, strings.Join(segments, "/"))
 }
 
 // notifyURL picks the page a notification should open: the commit's pull

@@ -60,6 +60,12 @@ type Watch struct {
 	OK       bool      `json:"ok"`              // every check succeeded; only meaningful when Finished
 	Error    string    `json:"error,omitempty"` // why waitbuild gave up, if it did
 	Checks   []Check   `json:"checks"`
+	// CreatePullRequestURL is the page that creates a pull request for the
+	// branch. It is only set once finished, when no pull request contains
+	// the commit and the branch is not the repository's default branch.
+	// A build without checks is only recorded when it is set, as the
+	// workflows may only run for pull requests.
+	CreatePullRequestURL string `json:"create_pull_request_url,omitempty"`
 }
 
 // State summarizes a watch for display.
@@ -72,6 +78,7 @@ const (
 	Cancelled State = "cancelled" // no check failed, but at least one was cancelled
 	Error     State = "error"     // waitbuild gave up (timeout, no checks, API error)
 	Stopped   State = "stopped"   // waitbuild exited without recording a result
+	NoChecks  State = "no checks" // no check ran, but a pull request can be created
 )
 
 // State returns the display state of w. An unfinished watch whose process no
@@ -84,6 +91,8 @@ func (w Watch) State() State {
 		return Running
 	case w.Error != "":
 		return Error
+	case len(w.Checks) == 0 && w.CreatePullRequestURL != "":
+		return NoChecks
 	case w.OK:
 		return Success
 	case w.cancelled():

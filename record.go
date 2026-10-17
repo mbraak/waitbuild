@@ -56,8 +56,9 @@ func (r *recorder) update(checks []check) {
 	}
 }
 
-// finish records that every check completed; url is the page to open.
-func (r *recorder) finish(ok bool, url string) {
+// finish records that every check completed; url is the page to open and
+// createPRURL, when not empty, the page that creates a pull request.
+func (r *recorder) finish(ok bool, url, createPRURL string) {
 	if r == nil {
 		return
 	}
@@ -66,6 +67,19 @@ func (r *recorder) finish(ok bool, url string) {
 	if url != "" {
 		r.w.URL = url
 	}
+	r.w.CreatePullRequestURL = createPRURL
+	r.save()
+}
+
+// noChecks records that no check ran for the commit, but that a pull request
+// can be created at createPRURL, which may start the workflows.
+func (r *recorder) noChecks(createPRURL string) {
+	if r == nil {
+		return
+	}
+	r.w.Finished = true
+	r.w.Checks = nil
+	r.w.CreatePullRequestURL = createPRURL
 	r.save()
 }
 

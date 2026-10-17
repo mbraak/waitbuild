@@ -314,14 +314,15 @@ func runsOnly(runs ...*github.WorkflowRun) *poll { return &poll{runs: runs} }
 // n-th request with polls[n]; once exhausted the last entry is repeated. A nil
 // entry answers with HTTP 500.
 type fakeAPI struct {
-	mu          sync.Mutex
-	polls       []*poll
-	pulls       []*github.PullRequest // served for .../commits/<sha>/pulls
-	noCommit    bool                  // answer .../commits/<sha>/pulls as for a commit GitHub does not have
-	noWorkflows bool                  // answer .../actions/workflows with an empty list
-	requests    []*http.Request
-	served      map[string]int // listing endpoint suffix -> requests answered
-	srv         *httptest.Server
+	mu            sync.Mutex
+	polls         []*poll
+	pulls         []*github.PullRequest // served for .../commits/<sha>/pulls
+	noCommit      bool                  // answer .../commits/<sha>/pulls as for a commit GitHub does not have
+	noWorkflows   bool                  // answer .../actions/workflows with an empty list
+	defaultBranch string                // served for the repository; "" answers with an error
+	requests      []*http.Request
+	served        map[string]int // listing endpoint suffix -> requests answered
+	srv           *httptest.Server
 }
 
 func newFakeAPI(t *testing.T, polls ...*poll) *fakeAPI {
@@ -343,6 +344,12 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message": "No commit found for SHA"}`, http.StatusUnprocessableEntity)
 	case strings.HasSuffix(r.URL.Path, "/pulls"):
 		_ = json.NewEncoder(w).Encode(f.pulls)
+	case strings.Count(strings.Trim(r.URL.Path, "/"), "/") == 2 && strings.HasPrefix(r.URL.Path, "/repos/"):
+		if f.defaultBranch == "" {
+			http.NotFound(w, r)
+		} else {
+			_ = json.NewEncoder(w).Encode(github.Repository{DefaultBranch: github.Ptr(f.defaultBranch)})
+		}
 	case strings.HasSuffix(r.URL.Path, "/actions/workflows"):
 		count := 1
 		if f.noWorkflows {
@@ -993,7 +1000,8 @@ func TestRun(t *testing.T) {
 		name  string
 		pulls []*github.PullRequest
 	}{
-		{"without a pull request", nil},
+		// On the default branch there is no pull request to create.
+		{"on the default branch", nil},
 		// The workflows only run on pushes to another branch.
 		{"with a pull request", []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr("https://github.com/mbraak/waitbuild/pull/3")}}},
 	} {
@@ -1004,6 +1012,7 @@ func TestRun(t *testing.T) {
 			t.Setenv("WAITBUILD_STATE_DIR", stateDir)
 			f := newFakeAPI(t, &poll{})
 			f.pulls = tt.pulls
+			f.defaultBranch = "main"
 			useFakeAPI(t, f, "tok")
 
 			out := captureStdout(t, func() {
@@ -1019,6 +1028,30 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a pushed commit without checks or pull request is recorded", func(t *testing.T) {
+		dir, _, sha := initRepo(t, remote)
+		t.Chdir(dir)
+		stateDir := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+		f := newFakeAPI(t, &poll{})
+		f.defaultBranch = "main"
+		useFakeAPI(t, f, "tok")
+
+		out := captureStdout(t, func() {
+			if err := run("", "feature", "", false, interval, 20*time.Millisecond, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want nil", err)
+			}
+		})
+		want := "https://github.com/mbraak/waitbuild/compare/feature?expand=1"
+		if !strings.Contains(out, "create a pull request") || !strings.Contains(out, want) {
+			t.Errorf("output should point to creating a pull request:\n%s", out)
+		}
+		w := loadOnly(t, stateDir)
+		if w.SHA != sha || w.State() != watch.NoChecks || w.CreatePullRequestURL != want {
+			t.Errorf("watch = %+v, want a build without checks that links to %s", w, want)
+		}
+	})
 
 	t.Run("a commit without checks that GitHub does not have is an error", func(t *testing.T) {
 		dir, _, _ := initRepo(t, remote)
@@ -1481,6 +1514,29 @@ func TestPrintPullRequest(t *testing.T) {
 			t.Fatalf("printPullRequest() = %v, want repository error", err)
 		}
 	})
+}
+
+// --- createPullRequestURL --------------------------------------------------
+
+func TestCreatePullRequestURL(t *testing.T) {
+	tests := []struct {
+		name, branch, defaultBranch, want string
+	}{
+		{"feature branch", "feature/x y", "main", "https://github.com/o/r/compare/feature/x%20y?expand=1"},
+		{"default branch", "main", "main", ""},
+		{"detached HEAD", "HEAD", "main", ""},
+		{"unknown branch", "", "main", ""},
+		{"lookup failure", "feature", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.defaultBranch = tt.defaultBranch
+			if got := createPullRequestURL(context.Background(), f.client(t), "o", "r", tt.branch); got != tt.want {
+				t.Fatalf("createPullRequestURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 // --- pullRequestURL --------------------------------------------------------

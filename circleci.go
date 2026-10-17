@@ -31,6 +31,9 @@ const circleCIPipelinePages = 3
 // pipeline whose config runs no workflow for the commit never gets any.
 const circleCIWorkflowsGrace = 30 * time.Minute
 
+// circleCIClient makes the CircleCI API requests.
+var circleCIClient = &http.Client{Timeout: requestTimeout}
+
 // circleCI asks CircleCI itself about the build of a commit. CircleCI reports
 // to GitHub only once it has started jobs, so while a pipeline is waiting to
 // be set up (which can take minutes when CircleCI is slow) GitHub knows
@@ -161,7 +164,7 @@ func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any
 	}
 	req.Header.Set("Circle-Token", c.token)
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := circleCIClient.Do(req)
 	if err != nil {
 		return err
 	}

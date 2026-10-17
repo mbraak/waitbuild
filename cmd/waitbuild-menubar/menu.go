@@ -103,6 +103,9 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 
 	e := entry{title: title}
 	e.items = append(e.items, item{title: "Open on GitHub", url: w.URL})
+	if w.CreatePullRequestURL != "" {
+		e.items = append(e.items, item{title: "Create pull request", url: w.CreatePullRequestURL})
+	}
 	switch state {
 	case watch.Error:
 		e.items = append(e.items, item{title: "Gave up: " + w.Error})

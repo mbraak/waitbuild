@@ -81,6 +81,9 @@ func TestRunRecordsWatch(t *testing.T) {
 		if w.URL != "https://github.com/mbraak/waitbuild/pull/7" {
 			t.Errorf("URL = %q, want the pull request", w.URL)
 		}
+		if w.CreatePullRequestURL != "" {
+			t.Errorf("CreatePullRequestURL = %q, want none with a pull request", w.CreatePullRequestURL)
+		}
 		want := []watch.Check{
 			{Name: "build", Status: "completed", Conclusion: "failure", URL: "https://github.com/o/r/actions/runs/1"},
 			{Name: "ci/circleci: lint", Status: "completed", Conclusion: "success", URL: "https://circleci.com/gh/o/r/ci/circleci:lint"},
@@ -92,6 +95,27 @@ func TestRunRecordsWatch(t *testing.T) {
 			if w.Checks[i] != want[i] {
 				t.Errorf("check %d = %+v, want %+v", i, w.Checks[i], want[i])
 			}
+		}
+	})
+
+	t.Run("records how to create a missing pull request", func(t *testing.T) {
+		state := t.TempDir()
+		t.Setenv("WAITBUILD_STATE_DIR", state)
+		dir, _, _ := initRepo(t, remote)
+		t.Chdir(dir)
+		f := newFakeAPI(t, &poll{runs: []*github.WorkflowRun{done(1, "build", "success")}})
+		f.defaultBranch = "main"
+		useFakeAPI(t, f, "tok")
+
+		captureStdout(t, func() {
+			if err := run("", "feature", "", false, interval, time.Minute, time.Minute, false); err != nil {
+				t.Errorf("run() = %v, want success", err)
+			}
+		})
+
+		want := "https://github.com/mbraak/waitbuild/compare/feature?expand=1"
+		if w := loadOnly(t, state); w.CreatePullRequestURL != want {
+			t.Errorf("CreatePullRequestURL = %q, want %q", w.CreatePullRequestURL, want)
 		}
 	})
 
@@ -147,6 +171,6 @@ func TestRecorderWaitsForChecks(t *testing.T) {
 func TestNilRecorder(t *testing.T) {
 	var r *recorder
 	r.update([]check{{name: "build"}})
-	r.finish(true, "https://example.com")
+	r.finish(true, "https://example.com", "")
 	r.fail(errors.New("boom"))
 }

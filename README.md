@@ -111,6 +111,12 @@ running build has "Stop and dismiss" instead: it stops the waitbuild process
 that waits for the build, so you get no notification for it, and removes the
 build from the menu. The build itself keeps running on GitHub.
 
+When a finished build's commit is in no pull request and its branch is not the
+repository's default branch, the submenu has "Create pull request", which opens
+GitHub's page for opening one. waitbuild checks this when the build finishes,
+so the item stays until the build is dismissed even when a pull request is
+created elsewhere afterwards.
+
 Every waitbuild process records its build in a JSON file in
 `~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).
 The menu bar app reads these files, so it shows builds started from any

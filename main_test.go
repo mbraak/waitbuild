@@ -314,14 +314,15 @@ func runsOnly(runs ...*github.WorkflowRun) *poll { return &poll{runs: runs} }
 // n-th request with polls[n]; once exhausted the last entry is repeated. A nil
 // entry answers with HTTP 500.
 type fakeAPI struct {
-	mu          sync.Mutex
-	polls       []*poll
-	pulls       []*github.PullRequest // served for .../commits/<sha>/pulls
-	noCommit    bool                  // answer .../commits/<sha>/pulls as for a commit GitHub does not have
-	noWorkflows bool                  // answer .../actions/workflows with an empty list
-	requests    []*http.Request
-	served      map[string]int // listing endpoint suffix -> requests answered
-	srv         *httptest.Server
+	mu            sync.Mutex
+	polls         []*poll
+	pulls         []*github.PullRequest // served for .../commits/<sha>/pulls
+	noCommit      bool                  // answer .../commits/<sha>/pulls as for a commit GitHub does not have
+	noWorkflows   bool                  // answer .../actions/workflows with an empty list
+	defaultBranch string                // served for the repository; "" answers with an error
+	requests      []*http.Request
+	served        map[string]int // listing endpoint suffix -> requests answered
+	srv           *httptest.Server
 }
 
 func newFakeAPI(t *testing.T, polls ...*poll) *fakeAPI {
@@ -343,6 +344,12 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message": "No commit found for SHA"}`, http.StatusUnprocessableEntity)
 	case strings.HasSuffix(r.URL.Path, "/pulls"):
 		_ = json.NewEncoder(w).Encode(f.pulls)
+	case strings.Count(strings.Trim(r.URL.Path, "/"), "/") == 2 && strings.HasPrefix(r.URL.Path, "/repos/"):
+		if f.defaultBranch == "" {
+			http.NotFound(w, r)
+		} else {
+			_ = json.NewEncoder(w).Encode(github.Repository{DefaultBranch: github.Ptr(f.defaultBranch)})
+		}
 	case strings.HasSuffix(r.URL.Path, "/actions/workflows"):
 		count := 1
 		if f.noWorkflows {
@@ -1481,6 +1488,29 @@ func TestPrintPullRequest(t *testing.T) {
 			t.Fatalf("printPullRequest() = %v, want repository error", err)
 		}
 	})
+}
+
+// --- createPullRequestURL --------------------------------------------------
+
+func TestCreatePullRequestURL(t *testing.T) {
+	tests := []struct {
+		name, branch, defaultBranch, want string
+	}{
+		{"feature branch", "feature/x y", "main", "https://github.com/o/r/compare/feature/x%20y?expand=1"},
+		{"default branch", "main", "main", ""},
+		{"detached HEAD", "HEAD", "main", ""},
+		{"unknown branch", "", "main", ""},
+		{"lookup failure", "feature", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeAPI(t)
+			f.defaultBranch = tt.defaultBranch
+			if got := createPullRequestURL(context.Background(), f.client(t), "o", "r", tt.branch); got != tt.want {
+				t.Fatalf("createPullRequestURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 // --- pullRequestURL --------------------------------------------------------

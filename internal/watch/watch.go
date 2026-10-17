@@ -60,6 +60,10 @@ type Watch struct {
 	OK       bool      `json:"ok"`              // every check succeeded; only meaningful when Finished
 	Error    string    `json:"error,omitempty"` // why waitbuild gave up, if it did
 	Checks   []Check   `json:"checks"`
+	// CreatePullRequestURL is the page that creates a pull request for the
+	// branch. It is only set once finished, when no pull request contains
+	// the commit and the branch is not the repository's default branch.
+	CreatePullRequestURL string `json:"create_pull_request_url,omitempty"`
 }
 
 // State summarizes a watch for display.

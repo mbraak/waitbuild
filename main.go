@@ -27,6 +27,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,8 +267,13 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
-	url := notifyURL(pullRequestURL(ctx, client, owner, repo, sha), owner, repo, sha, checks)
-	rec.finish(ok, url)
+	prURL, prErr := findPullRequest(ctx, client, owner, repo, sha)
+	url := notifyURL(prURL, owner, repo, sha, checks)
+	createPRURL := ""
+	if prErr == nil && prURL == "" {
+		createPRURL = createPullRequestURL(ctx, client, owner, repo, circleBranch)
+	}
+	rec.finish(ok, url, createPRURL)
 	// A cancelled build (usually superseded by a newer push) needs no
 	// attention, so it gets no notification.
 	if notify && (ok || failed) {
@@ -654,16 +660,41 @@ func printPullRequest(sha string) error {
 // request or the lookup fails; the notification then falls back to another
 // page, so a lookup failure is never fatal.
 func pullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha string) string {
+	url, _ := findPullRequest(ctx, client, owner, repo, sha)
+	return url
+}
+
+// findPullRequest is pullRequestURL, but also returns the error of a failed
+// lookup, to tell it apart from a commit without a pull request.
+func findPullRequest(ctx context.Context, client *github.Client, owner, repo, sha string) (string, error) {
 	prs, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, &github.ListOptions{PerPage: 100})
 	if err != nil || len(prs) == 0 {
-		return ""
+		return "", err
 	}
 	for _, pr := range prs {
 		if pr.GetState() == "open" && pr.GetHTMLURL() != "" {
-			return pr.GetHTMLURL()
+			return pr.GetHTMLURL(), nil
 		}
 	}
-	return prs[0].GetHTMLURL()
+	return prs[0].GetHTMLURL(), nil
+}
+
+// createPullRequestURL returns the GitHub page that creates a pull request
+// for branch, or "" when there is nothing to create one from: the branch is
+// unknown or the repository's default branch, or looking that up failed.
+func createPullRequestURL(ctx context.Context, client *github.Client, owner, repo, branch string) string {
+	if branch == "" || branch == "HEAD" {
+		return ""
+	}
+	r, _, err := client.Repositories.Get(ctx, owner, repo)
+	if err != nil || branch == r.GetDefaultBranch() {
+		return ""
+	}
+	segments := strings.Split(branch, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/compare/%s?expand=1", owner, repo, strings.Join(segments, "/"))
 }
 
 // commitOnGitHub reports whether GitHub has the commit sha. Listing its pull

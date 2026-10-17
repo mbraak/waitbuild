@@ -56,8 +56,9 @@ func (r *recorder) update(checks []check) {
 	}
 }
 
-// finish records that every check completed; url is the page to open.
-func (r *recorder) finish(ok bool, url string) {
+// finish records that every check completed; url is the page to open and
+// createPRURL, when not empty, the page that creates a pull request.
+func (r *recorder) finish(ok bool, url, createPRURL string) {
 	if r == nil {
 		return
 	}
@@ -66,6 +67,7 @@ func (r *recorder) finish(ok bool, url string) {
 	if url != "" {
 		r.w.URL = url
 	}
+	r.w.CreatePullRequestURL = createPRURL
 	r.save()
 }
 

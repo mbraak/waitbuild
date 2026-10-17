@@ -99,6 +99,18 @@ func TestBuildMenuFinished(t *testing.T) {
 	}
 }
 
+func TestBuildMenuCreatePullRequest(t *testing.T) {
+	w := finished("aaaaaaaaaa", true, now)
+	w.CreatePullRequestURL = "https://github.com/o/r/compare/feature?expand=1"
+	want := []item{
+		{title: "Open on GitHub", url: w.URL},
+		{title: "Create pull request", url: w.CreatePullRequestURL},
+	}
+	if got := buildMenu([]watch.Watch{w}, now).entries[0].items[:2]; !reflect.DeepEqual(got, want) {
+		t.Errorf("items = %+v, want %+v", got, want)
+	}
+}
+
 func TestBuildMenuCancelled(t *testing.T) {
 	cancelled := finished("aaaaaaaaaa", false, now.Add(-5*time.Minute),
 		watch.Check{Name: "lint", Status: "completed", Conclusion: "success"},

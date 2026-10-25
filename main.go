@@ -361,7 +361,8 @@ func hasActionsWorkflows(ctx context.Context, client *github.Client, owner, repo
 // waitForChecks polls until at least one check exists for sha and every check
 // has completed. Because several workflows and services report on the same
 // push and can register a few seconds apart, "all completed" has to hold for
-// two consecutive polls before the result is accepted. onPoll, when not nil,
+// two consecutive polls before the result is accepted. Until the first check
+// appears it polls every appearInterval when that is shorter. onPoll, when not nil,
 // receives the checks after every poll. circle, when not nil, also asks
 // CircleCI.
 func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI, owner, repo, sha string, interval, appearTimeout time.Duration, hasWorkflows bool, onPoll func([]check)) ([]check, error) {
@@ -417,11 +418,21 @@ func waitForChecks(ctx context.Context, client *github.Client, circle *circleCI,
 			settledOnce = false
 		}
 
-		if err := sleep(ctx, interval); err != nil {
+		wait := interval
+		if len(checks) == 0 {
+			wait = min(interval, appearInterval)
+		}
+		if err := sleep(ctx, wait); err != nil {
 			return nil, err
 		}
 	}
 }
+
+// appearInterval is the poll interval while no check has appeared yet. The
+// pre-push hook starts waitbuild before the push reaches GitHub, so the first
+// poll finds nothing; polling more often until the first check appears shows
+// the build in the menu bar app within seconds of the push.
+const appearInterval = 2 * time.Second
 
 // sleep waits for d, or returns an error when ctx expires first.
 func sleep(ctx context.Context, d time.Duration) error {

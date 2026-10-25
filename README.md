@@ -114,13 +114,15 @@ running build has "Stop and dismiss" instead: it stops the waitbuild process
 that waits for the build, so you get no notification for it, and removes the
 build from the menu. The build itself keeps running on GitHub.
 
-When a finished build's commit is in no pull request and its branch is not the
+When a build's commit is in no pull request and its branch is not the
 repository's default branch, the submenu has "Create pull request", which opens
-GitHub's page for opening one. waitbuild checks this when the build finishes.
+GitHub's page for opening one. waitbuild checks this when the first check
+appears, so the item is there while the build runs, and again when the build
+finishes.
 A build without checks (⚪) is checked once a minute like a failed one (see
 below), so it shows as running as soon as the pull request starts the
-workflows. Otherwise the item stays until the build is dismissed, even when a
-pull request is created elsewhere afterwards.
+workflows. Otherwise, once the build finished, the item stays until the build
+is dismissed, even when a pull request is created elsewhere afterwards.
 
 Every waitbuild process records its build in a JSON file in
 `~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).

@@ -87,7 +87,7 @@ func TestRowsInfo(t *testing.T) {
 	m := loaded(running("aaaaaaaaaa", now), gaveUp, stopped)
 	m, _ = press(m, "down", "down", "enter", "down", "down", "enter")
 	want := []string{
-		"⠋  o/r · main · aaaaaaa — 0/0, just started",
+		"⠋  o/r · main · aaaaaaa — pending",
 		"Waiting for checks to appear…",
 		"⚠️ o/r · feature · ccccccc — just now",
 		"Gave up: no checks appeared",
@@ -248,7 +248,7 @@ func TestSpinner(t *testing.T) {
 	if cmd == nil {
 		t.Error("spinner stopped while a build is running")
 	}
-	if got, want := m.rows()[0].text, "⠙  o/r · main · aaaaaaa — 0/0, just started"; got != want {
+	if got, want := m.rows()[0].text, "⠙  o/r · main · aaaaaaa — pending"; got != want {
 		t.Errorf("row = %q, want %q", got, want)
 	}
 

@@ -480,17 +480,29 @@ func buildTitle(w watch.Watch, state watch.State, spinner string, now time.Time)
 				done++
 			}
 		}
-		elapsed := "just started"
-		if d := short(now.Sub(w.Started)); d != "" {
-			elapsed = "running " + d
-		}
-		return title + fmt.Sprintf(" — %d/%d, %s", done, len(w.Checks), elapsed)
+		return title + " — " + progress(done, len(w.Checks), now.Sub(w.Started))
 	}
 	finished := "just now"
 	if d := short(now.Sub(w.Updated)); d != "" {
 		finished = d + " ago"
 	}
 	return title + " — " + finished
+}
+
+// progress describes a running build: "pending" until its first check
+// appears, then how many of its checks are done.
+func progress(done, total int, elapsed time.Duration) string {
+	d := short(elapsed)
+	if total == 0 {
+		if d == "" {
+			return "pending"
+		}
+		return "pending " + d
+	}
+	if d == "" {
+		return fmt.Sprintf("%d/%d, just started", done, total)
+	}
+	return fmt.Sprintf("%d/%d, running %s", done, total, d)
 }
 
 func checkTitle(c watch.Check, spinner string) string {

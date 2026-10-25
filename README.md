@@ -99,10 +99,11 @@ because they only run for pull requests or on pushes to `master`: waitbuild
 exits with 0 and the build is not shown in the menu bar app. The exception is a
 commit on a branch other than the default branch that is in no pull request:
 it is shown as ⚪ (no checks) with "Create pull request", since creating one may
-start the workflows. The menu bar app
-only shows a build once its first check appears, so a push without CI never
-shows up as running. Until then waitbuild polls every 2 seconds instead of
-every `-interval`, so the build shows up shortly after the push.
+start the workflows. The menu bar app shows a build as pending (⏳) right after
+the push, until its first check appears or waitbuild gives up; a push without
+CI is then removed again. Until the first check appears waitbuild polls every 2
+seconds instead of every `-interval`, so the checks show up shortly after they
+start.
 
 ## Menu bar app
 

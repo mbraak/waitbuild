@@ -70,7 +70,7 @@ func TestBuildMenuRunning(t *testing.T) {
 	if !reflect.DeepEqual(m.entries[0].items, wantItems) {
 		t.Errorf("items = %+v, want %+v", m.entries[0].items, wantItems)
 	}
-	if want := "⏳ o/r · main · 2222222 — 0/0, just started"; m.entries[1].title != want {
+	if want := "⏳ o/r · main · 2222222 — pending"; m.entries[1].title != want {
 		t.Errorf("entry title = %q, want %q", m.entries[1].title, want)
 	}
 	if got := titles(m.entries[1].items); !reflect.DeepEqual(got, []string{"Open on GitHub", "Waiting for checks to appear…", "Stop and dismiss"}) {

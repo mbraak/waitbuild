@@ -168,8 +168,36 @@ func TestRecorderWaitsForChecks(t *testing.T) {
 	}
 }
 
+func TestRecordPollsLooksUpPullRequestOnce(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("WAITBUILD_STATE_DIR", state)
+	r := newRecorder("o", "r", "feature", "aaaaaaaaaa")
+	lookups := 0
+	onPoll := r.recordPolls(func() string {
+		lookups++
+		return "https://github.com/o/r/compare/feature?expand=1"
+	})
+
+	onPoll(nil)
+	if lookups != 0 {
+		t.Fatalf("looked up %d times before a check appeared, want 0", lookups)
+	}
+	onPoll([]check{{name: "build", status: "in_progress"}})
+	onPoll([]check{{name: "build", status: "completed", conclusion: "success"}})
+	if lookups != 1 {
+		t.Errorf("looked up %d times, want 1", lookups)
+	}
+	w := loadOnly(t, state)
+	if w.State() != watch.Running || w.CreatePullRequestURL != "https://github.com/o/r/compare/feature?expand=1" {
+		t.Errorf("state=%s CreatePullRequestURL=%q, want a running build with the create URL", w.State(), w.CreatePullRequestURL)
+	}
+}
+
 func TestNilRecorder(t *testing.T) {
 	var r *recorder
+	if r.recordPolls(func() string { return "" }) != nil {
+		t.Error("recordPolls() of a nil recorder is not nil")
+	}
 	r.update([]check{{name: "build"}})
 	r.finish(true, "https://example.com", "")
 	r.fail(errors.New("boom"))

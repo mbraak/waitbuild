@@ -5,8 +5,8 @@
 // watch); this app only reads those files, so it makes no GitHub API calls of
 // its own. The menu bar shows ⏳ with the number of running builds, or the
 // result of the most recent build. Each build has a submenu with its checks;
-// clicking a check opens it on GitHub. A finished build whose commit is in no
-// pull request has an item that opens GitHub's page for creating one.
+// clicking a check opens it on GitHub. A build whose commit is in no pull
+// request has an item that opens GitHub's page for creating one.
 //
 // Finished builds stay in the menu until they are dismissed, cleared or older
 // than -keep. A running build can be dismissed too, which stops its waitbuild

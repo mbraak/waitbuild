@@ -230,7 +230,10 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	}
 
 	rec := newRecorder(owner, repo, branch, sha)
-	checks, err := waitForChecks(ctx, client, circle, owner, repo, sha, interval, appearTimeout, hasWorkflows, rec.update)
+	onPoll := rec.recordPolls(func() string {
+		return missingPullRequestURL(ctx, client, owner, repo, sha, circleBranch)
+	})
+	checks, err := waitForChecks(ctx, client, circle, owner, repo, sha, interval, appearTimeout, hasWorkflows, onPoll)
 	if errors.Is(err, errNoCI) {
 		// Not a problem worth showing: forget the build instead of
 		// recording it as failed.
@@ -279,6 +282,7 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("  %s %-*s %-10s %s\n", mark, width, c.name, c.conclusion, c.url)
 	}
 
+	// Look again: a pull request may have been created during the build.
 	prURL, prErr := findPullRequest(ctx, client, owner, repo, sha)
 	url := notifyURL(prURL, owner, repo, sha, checks)
 	createPRURL := ""
@@ -689,6 +693,15 @@ func findPullRequest(ctx context.Context, client *github.Client, owner, repo, sh
 		}
 	}
 	return prs[0].GetHTMLURL(), nil
+}
+
+// missingPullRequestURL returns createPullRequestURL for branch when no pull
+// request contains sha, and "" otherwise or when the lookup fails.
+func missingPullRequestURL(ctx context.Context, client *github.Client, owner, repo, sha, branch string) string {
+	if prURL, err := findPullRequest(ctx, client, owner, repo, sha); err != nil || prURL != "" {
+		return ""
+	}
+	return createPullRequestURL(ctx, client, owner, repo, branch)
 }
 
 // createPullRequestURL returns the GitHub page that creates a pull request

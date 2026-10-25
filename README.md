@@ -101,7 +101,8 @@ commit on a branch other than the default branch that is in no pull request:
 it is shown as ⚪ (no checks) with "Create pull request", since creating one may
 start the workflows. The menu bar app
 only shows a build once its first check appears, so a push without CI never
-shows up as running.
+shows up as running. Until then waitbuild polls every 2 seconds instead of
+every `-interval`, so the build shows up shortly after the push.
 
 ## Menu bar app
 

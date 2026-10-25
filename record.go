@@ -59,18 +59,21 @@ func (r *recorder) update(checks []check) {
 // recordPolls returns an onPoll function for waitForChecks that records the
 // checks of every poll. When the first check appears, it also records
 // createPRURL(), so the menu offers to create a missing pull request while
-// the build is still running.
+// the build is still running. The checks are recorded before that lookup, so
+// the build shows up without waiting for it.
 func (r *recorder) recordPolls(createPRURL func() string) func([]check) {
 	if r == nil {
 		return nil
 	}
 	lookedUp := false
 	return func(checks []check) {
+		r.update(checks)
 		if !lookedUp && len(checks) > 0 {
 			lookedUp = true
-			r.w.CreatePullRequestURL = createPRURL()
+			if r.w.CreatePullRequestURL = createPRURL(); r.w.CreatePullRequestURL != "" {
+				r.save()
+			}
 		}
-		r.update(checks)
 	}
 }
 

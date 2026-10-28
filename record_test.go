@@ -179,8 +179,11 @@ func TestRecordPollsLooksUpPullRequestOnce(t *testing.T) {
 	})
 
 	onPoll(nil)
-	if lookups != 0 {
-		t.Fatalf("looked up %d times before a check appeared, want 0", lookups)
+	if lookups != 1 {
+		t.Fatalf("looked up %d times before a check appeared, want 1", lookups)
+	}
+	if w := loadOnly(t, state); w.State() != watch.Running || w.CreatePullRequestURL == "" {
+		t.Errorf("state=%s CreatePullRequestURL=%q, want a pending build with the create URL", w.State(), w.CreatePullRequestURL)
 	}
 	onPoll([]check{{name: "build", status: "in_progress"}})
 	onPoll([]check{{name: "build", status: "completed", conclusion: "success"}})

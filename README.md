@@ -118,9 +118,10 @@ build from the menu. The build itself keeps running on GitHub.
 
 When a build's commit is in no pull request and its branch is not the
 repository's default branch, the submenu has "Create pull request", which opens
-GitHub's page for opening one. waitbuild checks this when the first check
-appears, so the item is there while the build runs, and again when the build
-finishes.
+GitHub's page for opening one. waitbuild checks this right after the push, so
+the item is there while the build is pending or running (also when the
+workflows only run for pull requests and no check appears), and again when the
+build finishes.
 A build without checks (⚪) is checked once a minute like a failed one (see
 below), so it shows as running as soon as the pull request starts the
 workflows. Otherwise, once the build finished, the item stays until the build

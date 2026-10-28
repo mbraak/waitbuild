@@ -13,14 +13,12 @@ import (
 // the file cannot be written the build is still waited for and reported.
 // A nil recorder records nothing.
 //
-// The file is only written once a check appears, or when waitbuild gives up:
-// until then it is unknown whether the commit has a build at all (the
-// workflows may not run for it), so the menu bar app should not show it as
-// pending.
+// The file is written on the first poll, so the build shows up as pending right
+// after the push, before any check appears. When no check appears and the
+// commit turns out to have no build, the file is removed again (see remove).
 type recorder struct {
-	dir   string
-	w     watch.Watch
-	saved bool // the watch file has been written
+	dir string
+	w   watch.Watch
 }
 
 func newRecorder(owner, repo, branch, sha string) *recorder {
@@ -51,15 +49,14 @@ func (r *recorder) update(checks []check) {
 	for i, c := range checks {
 		r.w.Checks[i] = watch.Check{Name: c.name, Status: c.status, Conclusion: c.conclusion, URL: c.url}
 	}
-	if len(checks) > 0 || r.saved {
-		r.save()
-	}
+	r.save()
 }
 
 // recordPolls returns an onPoll function for waitForChecks that records the
-// checks of every poll. When the first check appears, it also records
-// createPRURL(), so the menu offers to create a missing pull request while
-// the build is still running. The checks are recorded before that lookup, so
+// checks of every poll. On the first poll it also records createPRURL(), so
+// the menu offers to create a missing pull request while the build is pending
+// or running; this matters when the workflows only run for pull requests and
+// no check would ever appear. The checks are recorded before that lookup, so
 // the build shows up without waiting for it.
 func (r *recorder) recordPolls(createPRURL func() string) func([]check) {
 	if r == nil {
@@ -68,7 +65,7 @@ func (r *recorder) recordPolls(createPRURL func() string) func([]check) {
 	lookedUp := false
 	return func(checks []check) {
 		r.update(checks)
-		if !lookedUp && len(checks) > 0 {
+		if !lookedUp {
 			lookedUp = true
 			if r.w.CreatePullRequestURL = createPRURL(); r.w.CreatePullRequestURL != "" {
 				r.save()
@@ -124,6 +121,5 @@ func (r *recorder) remove() {
 
 func (r *recorder) save() {
 	r.w.Updated = time.Now()
-	r.saved = true
 	_ = watch.Save(r.dir, r.w)
 }

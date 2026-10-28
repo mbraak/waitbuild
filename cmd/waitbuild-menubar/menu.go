@@ -89,11 +89,7 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 				done++
 			}
 		}
-		elapsed := "just started"
-		if d := short(now.Sub(w.Started)); d != "" {
-			elapsed = "running " + d
-		}
-		title += fmt.Sprintf(" — %d/%d, %s", done, len(w.Checks), elapsed)
+		title += " — " + progress(done, len(w.Checks), now.Sub(w.Started))
 	default:
 		finished := "just now"
 		if d := short(now.Sub(w.Updated)); d != "" {
@@ -125,8 +121,28 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 	if state == watch.Running {
 		dismiss = "Stop and dismiss"
 	}
+	// waitbuild sets Updated after every poll. Dismiss does not need it, and
+	// leaving it out keeps the menu equal between polls, so that it is not
+	// rebuilt (and closed while open) when nothing visible changed.
+	w.Updated = time.Time{}
 	e.items = append(e.items, item{title: dismiss, dismiss: &w})
 	return e
+}
+
+// progress describes a running build: "pending" until its first check
+// appears, then how many of its checks are done.
+func progress(done, total int, elapsed time.Duration) string {
+	d := short(elapsed)
+	if total == 0 {
+		if d == "" {
+			return "pending"
+		}
+		return "pending " + d
+	}
+	if d == "" {
+		return fmt.Sprintf("%d/%d, just started", done, total)
+	}
+	return fmt.Sprintf("%d/%d, running %s", done, total, d)
 }
 
 func checkTitle(c watch.Check) string {

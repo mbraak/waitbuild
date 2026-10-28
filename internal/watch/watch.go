@@ -64,7 +64,7 @@ type Watch struct {
 	// branch. It is set when the first check appears and again once
 	// finished, when no pull request contains the commit and the branch is
 	// not the repository's default branch.
-	// A build without checks is only recorded when it is set, as the
+	// A finished build without checks is only kept when it is set, as the
 	// workflows may only run for pull requests.
 	CreatePullRequestURL string `json:"create_pull_request_url,omitempty"`
 }

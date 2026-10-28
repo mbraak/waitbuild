@@ -59,20 +59,35 @@ func TestBuildMenuRunning(t *testing.T) {
 	if want := "⏳ o/r · main · 1111111 — 1/2, running 3m"; m.entries[0].title != want {
 		t.Errorf("entry title = %q, want %q", m.entries[0].title, want)
 	}
+	dismissed := first
+	dismissed.Updated = time.Time{}
 	wantItems := []item{
 		{title: "Open on GitHub", url: "https://github.com/o/r/commit/1111111111/checks"},
 		{title: "✔ build — success", url: "https://x/build"},
 		{title: "⏳ lint — in_progress", url: "https://x/lint"},
-		{title: "Stop and dismiss", dismiss: &first},
+		{title: "Stop and dismiss", dismiss: &dismissed},
 	}
 	if !reflect.DeepEqual(m.entries[0].items, wantItems) {
 		t.Errorf("items = %+v, want %+v", m.entries[0].items, wantItems)
 	}
-	if want := "⏳ o/r · main · 2222222 — 0/0, just started"; m.entries[1].title != want {
+	if want := "⏳ o/r · main · 2222222 — pending"; m.entries[1].title != want {
 		t.Errorf("entry title = %q, want %q", m.entries[1].title, want)
 	}
 	if got := titles(m.entries[1].items); !reflect.DeepEqual(got, []string{"Open on GitHub", "Waiting for checks to appear…", "Stop and dismiss"}) {
 		t.Errorf("items without checks = %v", got)
+	}
+}
+
+// A poll that changes nothing visible must not change the menu, or it would be
+// rebuilt and close while the user has it open.
+func TestBuildMenuUnchangedByPoll(t *testing.T) {
+	w := running("1111111111", now.Add(-3*time.Minute),
+		watch.Check{Name: "build", Status: "in_progress", URL: "https://x/build"})
+	before := buildMenu([]watch.Watch{w}, now)
+	w.Updated = now.Add(5 * time.Second)
+	after := buildMenu([]watch.Watch{w}, now.Add(5*time.Second))
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("menu changed after a poll that changed nothing visible:\n%+v\n%+v", before, after)
 	}
 }
 

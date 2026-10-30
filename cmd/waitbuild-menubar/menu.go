@@ -123,7 +123,7 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 	}
 	// waitbuild sets Updated after every poll. Dismiss does not need it, and
 	// leaving it out keeps the menu equal between polls, so that it is not
-	// rebuilt (and closed while open) when nothing visible changed.
+	// redrawn when nothing visible changed.
 	w.Updated = time.Time{}
 	e.items = append(e.items, item{title: dismiss, dismiss: &w})
 	return e

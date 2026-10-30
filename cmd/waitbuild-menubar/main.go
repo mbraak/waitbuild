@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"reflect"
 	"runtime"
+	"sync"
 	"time"
 
 	"fyne.io/systray"
@@ -65,6 +66,7 @@ type app struct {
 	keep    time.Duration
 	refresh chan struct{} // requests an immediate refresh, after a click changed the files
 	shown   *menu
+	tray    *tray         // nil until the first render
 	reruns  *rerunWatcher // nil when rerun checks are disabled
 }
 
@@ -116,48 +118,132 @@ func (a *app) update() {
 	a.render(m)
 }
 
-// render replaces the whole menu. Rebuilding is simpler than patching items
-// in place, and happens at most once a minute unless a build changes.
-// ResetMenu closes the ClickedCh of the removed items, which ends their
-// goroutines.
+// tray holds the menu items between renders. render updates them in place
+// instead of rebuilding the menu, because removing the items of an open menu
+// closes it. The top-level items are created up front, since systray can only
+// append items and the entries have to stay above "Clear finished" and "Quit".
+type tray struct {
+	noBuilds *systray.MenuItem
+	entries  [maxEntries]*traySlot
+	clear    *actionItem
+}
+
+// traySlot is the top-level item at one position in the menu with its
+// submenu. It grows when an entry needs more submenu items than it has and
+// hides the ones it does not use.
+type traySlot struct {
+	item  *systray.MenuItem
+	items []*actionItem
+}
+
+// actionItem is a menu item whose click action can change between renders.
+type actionItem struct {
+	*systray.MenuItem
+	mu     sync.Mutex
+	action func() // nil disables the item
+}
+
+func newActionItem(item *systray.MenuItem) *actionItem {
+	a := &actionItem{MenuItem: item}
+	go func() {
+		for range item.ClickedCh {
+			a.mu.Lock()
+			f := a.action
+			a.mu.Unlock()
+			if f != nil {
+				f()
+			}
+		}
+	}()
+	return a
+}
+
+func (a *actionItem) set(title, tooltip string, action func()) {
+	a.mu.Lock()
+	a.action = action
+	a.mu.Unlock()
+	a.SetTitle(title)
+	a.SetTooltip(tooltip)
+	if action == nil {
+		a.Disable()
+	} else {
+		a.Enable()
+	}
+	a.Show()
+}
+
+func newTray() *tray {
+	t := &tray{noBuilds: systray.AddMenuItem("No builds", "")}
+	t.noBuilds.Disable()
+	for i := range t.entries {
+		item := systray.AddMenuItem("", "")
+		item.Hide()
+		t.entries[i] = &traySlot{item: item}
+	}
+	systray.AddSeparator()
+	t.clear = newActionItem(systray.AddMenuItem("Clear finished", ""))
+	quit := newActionItem(systray.AddMenuItem("Quit", ""))
+	quit.action = systray.Quit
+	return t
+}
+
+// render shows m by updating the existing menu items, so that an open menu
+// stays open.
 func (a *app) render(m menu) {
-	systray.ResetMenu()
+	if a.tray == nil {
+		a.tray = newTray()
+	}
+	t := a.tray
 	systray.SetTitle(m.title)
 	systray.SetTooltip(m.tooltip)
 
 	if len(m.entries) == 0 {
-		systray.AddMenuItem("No builds", "").Disable()
+		t.noBuilds.Show()
+	} else {
+		t.noBuilds.Hide()
 	}
-	for _, e := range m.entries {
-		parent := systray.AddMenuItem(e.title, "")
-		for _, it := range e.items {
-			sub := parent.AddSubMenuItem(it.title, it.url)
-			switch {
-			case it.url != "":
-				onClick(sub, func() { openURL(it.url) })
-			case it.dismiss != nil:
-				w := *it.dismiss
-				onClick(sub, func() {
-					if err := watch.Dismiss(a.dir, w); err != nil {
-						fmt.Fprintln(os.Stderr, "waitbuild-menubar:", err)
-					}
-					a.requestRefresh()
-				})
-			default:
-				sub.Disable()
+	for i, s := range t.entries {
+		if i >= len(m.entries) {
+			s.item.Hide()
+			continue
+		}
+		e := m.entries[i]
+		s.item.SetTitle(e.title)
+		s.item.Show()
+		for j, it := range e.items {
+			if j == len(s.items) {
+				s.items = append(s.items, newActionItem(s.item.AddSubMenuItem("", "")))
 			}
+			s.items[j].set(it.title, it.url, a.action(it))
+		}
+		for _, sub := range s.items[len(e.items):] {
+			sub.Hide()
 		}
 	}
 
-	systray.AddSeparator()
-	clear := systray.AddMenuItem("Clear finished", "Remove every build that is no longer running")
+	var clear func()
 	if m.hasFinished {
-		onClick(clear, a.clearFinished)
-	} else {
-		clear.Disable()
+		clear = a.clearFinished
 	}
-	quit := systray.AddMenuItem("Quit", "")
-	onClick(quit, systray.Quit)
+	t.clear.set("Clear finished", "Remove every build that is no longer running", clear)
+}
+
+// action returns what clicking it does, or nil when it is not clickable.
+func (a *app) action(it item) func() {
+	switch {
+	case it.url != "":
+		return func() { openURL(it.url) }
+	case it.dismiss != nil:
+		w := *it.dismiss
+		return func() {
+			if err := watch.Dismiss(a.dir, w); err != nil {
+				fmt.Fprintln(os.Stderr, "waitbuild-menubar:", err)
+			}
+			a.requestRefresh()
+		}
+	default:
+		return nil
+	}
 }
 
 // clearFinished deletes the watch files of every build that is not running.
@@ -169,15 +255,6 @@ func (a *app) clearFinished() {
 		}
 	}
 	a.requestRefresh()
-}
-
-// onClick calls f for every click on item until the item is removed.
-func onClick(item *systray.MenuItem, f func()) {
-	go func() {
-		for range item.ClickedCh {
-			f()
-		}
-	}()
 }
 
 func openURL(url string) {

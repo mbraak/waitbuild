@@ -79,7 +79,7 @@ func TestBuildMenuRunning(t *testing.T) {
 }
 
 // A poll that changes nothing visible must not change the menu, or it would be
-// rebuilt and close while the user has it open.
+// redrawn every poll.
 func TestBuildMenuUnchangedByPoll(t *testing.T) {
 	w := running("1111111111", now.Add(-3*time.Minute),
 		watch.Check{Name: "build", Status: "in_progress", URL: "https://x/build"})

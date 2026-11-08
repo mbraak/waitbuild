@@ -214,6 +214,20 @@ func Load(dir string) ([]Watch, error) {
 	return watches, nil
 }
 
+// Get reads the watch of sha in owner/repo from dir. It reports false when
+// there is none or it cannot be read.
+func Get(dir, owner, repo, sha string) (Watch, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, Watch{Owner: owner, Repo: repo, SHA: sha}.fileName()))
+	if err != nil {
+		return Watch{}, false
+	}
+	var w Watch
+	if json.Unmarshal(data, &w) != nil || w.SHA == "" {
+		return Watch{}, false
+	}
+	return w, true
+}
+
 // Remove deletes the file of w from dir. A file that is already gone is not
 // an error.
 func Remove(dir string, w Watch) error {

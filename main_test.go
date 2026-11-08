@@ -1580,3 +1580,64 @@ func TestPullRequestURL(t *testing.T) {
 		}
 	})
 }
+
+// --- rerunLikely -----------------------------------------------------------
+
+func TestRerunLikely(t *testing.T) {
+	failed := check{name: "test", status: "completed", conclusion: "failure", url: "u/1"}
+	passed := check{name: "test", status: "completed", conclusion: "success", url: "u/2"}
+	rerunning := check{name: "test", status: "in_progress", url: "u/2"}
+	lint := check{name: "lint", status: "completed", conclusion: "success", url: "u/3"}
+	stuck := check{name: "codecov/patch", status: "in_progress", url: "u/4"}
+	recordedStuck := []watch.Check{
+		{Name: "lint", Status: "completed", Conclusion: "success", URL: "u/3"},
+		{Name: "codecov/patch", Status: "in_progress", URL: "u/4"},
+	}
+
+	tests := []struct {
+		name     string
+		checks   []check
+		recorded []watch.Check
+		want     bool
+	}{
+		{"no checks", nil, nil, false},
+		{"still failed", []check{lint, failed}, nil, false},
+		{"rerunning", []check{lint, rerunning}, nil, true},
+		{"rerunning after a failure", []check{failed, rerunning}, nil, true},
+		{"rerun succeeded", []check{lint, passed}, nil, true},
+		{"unfinished without a recorded watch", []check{lint, stuck}, nil, true},
+		{"stuck since waitbuild gave up", []check{lint, stuck}, recordedStuck, false},
+		{"stuck check is rerun", []check{lint, {name: "codecov/patch", status: "queued", url: "u/5"}}, recordedStuck, true},
+		{"other check rerunning next to a stuck one", []check{rerunning, stuck}, recordedStuck, true},
+		{"rerun succeeded next to a stuck one", []check{passed, stuck}, recordedStuck, false},
+	}
+	for _, tt := range tests {
+		if got := rerunLikely(tt.checks, tt.recorded); got != tt.want {
+			t.Errorf("%s: rerunLikely = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestRecordedChecks(t *testing.T) {
+	t.Setenv("WAITBUILD_STATE_DIR", t.TempDir())
+	dir, _ := watch.Dir()
+	checks := []watch.Check{{Name: "test", Status: "in_progress"}}
+	w := watch.Watch{Owner: "o", Repo: "r", SHA: "abc", Checks: checks}
+
+	if got := recordedChecks("o", "r", "abc"); got != nil {
+		t.Errorf("without a watch file: %v, want nil", got)
+	}
+	if err := watch.Save(dir, w); err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedChecks("o", "r", "abc"); got != nil {
+		t.Errorf("unfinished watch: %v, want nil", got)
+	}
+	w.Finished = true
+	if err := watch.Save(dir, w); err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedChecks("o", "r", "abc"); !reflect.DeepEqual(got, checks) {
+		t.Errorf("finished watch: %v, want %v", got, checks)
+	}
+}

@@ -70,6 +70,14 @@ type Watch struct {
 	CreatePullRequestURL string `json:"create_pull_request_url,omitempty"`
 }
 
+// CircleCITokenRejected is the Warning of a watch whose CircleCI token was
+// rejected, and CircleCITokensURL the page that creates a new token. The menu
+// bar app recognizes the warning to offer that page.
+const (
+	CircleCITokenRejected = "CircleCI rejected the token (expired or revoked?)"
+	CircleCITokensURL     = "https://app.circleci.com/settings/user/tokens"
+)
+
 // State summarizes a watch for display.
 type State string
 

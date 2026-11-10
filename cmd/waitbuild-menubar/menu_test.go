@@ -165,6 +165,28 @@ func TestBuildMenuWarning(t *testing.T) {
 	}
 }
 
+func TestBuildMenuTokenNotice(t *testing.T) {
+	if m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now)}, now); m.notice != nil {
+		t.Errorf("notice = %+v without a rejected token", *m.notice)
+	}
+
+	rejected := finished("bbbbbbbbbb", true, now.Add(-time.Hour))
+	rejected.Warning = watch.CircleCITokenRejected
+	m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now), rejected}, now)
+	if m.notice == nil {
+		t.Fatal("no notice while a build has the CircleCI token rejected")
+	}
+	if m.notice.url != watch.CircleCITokensURL || !strings.Contains(m.notice.title, "CircleCI token rejected") {
+		t.Errorf("notice = %+v, want one opening the CircleCI tokens page", *m.notice)
+	}
+
+	other := finished("cccccccccc", true, now)
+	other.Warning = "something else"
+	if m := buildMenu([]watch.Watch{other}, now); m.notice != nil {
+		t.Errorf("notice = %+v for another warning", *m.notice)
+	}
+}
+
 func TestBuildMenuErrorAndStopped(t *testing.T) {
 	gaveUp := finished("aaaaaaaaaa", false, now)
 	gaveUp.Error = "no checks appeared"

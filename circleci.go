@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mbraak/waitbuild/internal/watch"
 )
 
 // circleCIBaseURL is the CircleCI API; a variable so tests can point it at a
@@ -157,10 +159,10 @@ var errCircleCINotFound = errors.New("not found")
 // errCircleCIUnauthorized is returned by get for HTTP 401. CircleCI answers
 // the same "Invalid token provided." for an expired, revoked or mistyped
 // token, so which one it is cannot be told apart.
-var errCircleCIUnauthorized = errors.New("CircleCI rejected the token (expired or revoked?)")
+var errCircleCIUnauthorized = errors.New(watch.CircleCITokenRejected)
 
 // circleCITokensURL is where a new CircleCI personal API token is created.
-const circleCITokensURL = "https://app.circleci.com/settings/user/tokens"
+const circleCITokensURL = watch.CircleCITokensURL
 
 // get fetches path (relative to the API) into v.
 func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any) error {
@@ -204,13 +206,31 @@ func (c *circleCI) checks(ctx context.Context, sha string) ([]check, bool, error
 	}
 	checks, found, err := c.pipelineChecks(ctx, sha)
 	if errors.Is(err, errCircleCIUnauthorized) {
-		c.missing = true
-		if c.warn != nil {
-			c.warn(errCircleCIUnauthorized.Error())
-		}
+		c.rejected()
 		return nil, false, nil
 	}
 	return checks, found, err
+}
+
+// checkToken asks CircleCI who the token belongs to, so that a rejected token
+// is reported when waitbuild starts rather than on the first poll. Any other
+// failure is left for the polls to run into.
+func (c *circleCI) checkToken(ctx context.Context) {
+	if c == nil || c.missing {
+		return
+	}
+	var me struct{}
+	if err := c.get(ctx, "/me", nil, &me); errors.Is(err, errCircleCIUnauthorized) {
+		c.rejected()
+	}
+}
+
+// rejected stops asking CircleCI after it rejected the token, and tells c.warn.
+func (c *circleCI) rejected() {
+	c.missing = true
+	if c.warn != nil {
+		c.warn(errCircleCIUnauthorized.Error())
+	}
 }
 
 // pipelineChecks does the work of checks.

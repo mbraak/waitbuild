@@ -219,6 +219,7 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 			rec.warn(msg)
 		}
 	}
+	circle.checkToken(ctx)
 
 	if ifRerun {
 		checks, err := listChecks(ctx, client, circle, owner, repo, sha)

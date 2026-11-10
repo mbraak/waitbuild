@@ -15,9 +15,14 @@ const maxEntries = 15
 type menu struct {
 	title       string // shown in the menu bar
 	tooltip     string
+	notice      *item // shown above the builds when not nil
 	entries     []entry
 	hasFinished bool // enables "Clear finished"
 }
+
+// tokenNotice is shown above the builds while a listed build has the CircleCI
+// token rejected; it opens the page that creates a new token.
+var tokenNotice = item{title: "⚠️ CircleCI token rejected — create a new token…", url: watch.CircleCITokensURL}
 
 // entry is one watched build: a top-level item with a submenu.
 type entry struct {
@@ -54,6 +59,9 @@ func buildMenu(watches []watch.Watch, now time.Time) menu {
 	m := menu{title: idleTitle, tooltip: "waitbuild: no builds"}
 	running := 0
 	for _, w := range watches {
+		if w.Warning == watch.CircleCITokenRejected {
+			m.notice = &tokenNotice
+		}
 		if w.State() == watch.Running {
 			running++
 		} else {

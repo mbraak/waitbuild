@@ -71,6 +71,8 @@ func (f *fakeCircleCI) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(circleCIPage[circleCIPipeline]{Items: cur.pipelines})
 	case strings.HasSuffix(r.URL.Path, "/workflow"):
 		_ = json.NewEncoder(w).Encode(circleCIPage[circleCIWorkflow]{Items: cur.workflows})
+	case strings.HasSuffix(r.URL.Path, "/me"):
+		_ = json.NewEncoder(w).Encode(map[string]string{"login": "someone"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -334,6 +336,53 @@ func TestCircleCIChecks(t *testing.T) {
 		}
 	})
 
+	t.Run("checking a valid token warns about nothing", func(t *testing.T) {
+		f := newFakeCircleCI(t, circlePoll{})
+		c := testCircleCI()
+		c.warn = func(msg string) { t.Errorf("warned %q", msg) }
+		c.checkToken(ctx)
+		if c.missing {
+			t.Error("stopped asking CircleCI after checking a valid token")
+		}
+		if paths := f.requestPaths(); !reflect.DeepEqual(paths, []string{"/api/v2/me"}) {
+			t.Errorf("requests = %v, want /api/v2/me", paths)
+		}
+	})
+
+	t.Run("checking a rejected token warns and stops asking", func(t *testing.T) {
+		f := newFakeCircleCI(t, circlePoll{})
+		f.badToken = true
+		c := testCircleCI()
+		var warnings []string
+		c.warn = func(msg string) { warnings = append(warnings, msg) }
+		c.checkToken(ctx)
+		if got, found, err := c.checks(ctx, "sha"); got != nil || found || err != nil {
+			t.Errorf("checks() = %v, %v, %v; want nothing", got, found, err)
+		}
+		if n := len(f.requestPaths()); n != 1 {
+			t.Errorf("%d requests, want only the token check", n)
+		}
+		if want := []string{errCircleCIUnauthorized.Error()}; !reflect.DeepEqual(warnings, want) {
+			t.Errorf("warnings = %q, want %q", warnings, want)
+		}
+	})
+
+	t.Run("a failed token check is left for the polls", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(srv.Close)
+		orig := circleCIBaseURL
+		circleCIBaseURL = srv.URL
+		t.Cleanup(func() { circleCIBaseURL = orig })
+		c := testCircleCI()
+		c.warn = func(msg string) { t.Errorf("warned %q", msg) }
+		c.checkToken(ctx)
+		if c.missing {
+			t.Error("stopped asking CircleCI after a failed token check")
+		}
+	})
+
 	t.Run("other API errors fail", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "nope", http.StatusInternalServerError)
@@ -482,9 +531,12 @@ func TestRunWithCircleCI(t *testing.T) {
 	if !strings.Contains(out, "✘ circleci: test") {
 		t.Errorf("output lacks the failed workflow:\n%s", out)
 	}
-	req := c.requests[0]
+	if paths := c.requestPaths(); len(paths) < 2 || paths[0] != "/api/v2/me" {
+		t.Fatalf("CircleCI requests = %v, want the token check first", paths)
+	}
+	req := c.requests[1]
 	if req.URL.Path != "/api/v2/project/gh/mbraak/waitbuild/pipeline" || req.URL.Query().Get("branch") != "main" {
-		t.Errorf("first CircleCI request = %s, want the pipelines of branch main", req.URL)
+		t.Errorf("first pipeline request = %s, want the pipelines of branch main", req.URL)
 	}
 }
 
@@ -502,13 +554,20 @@ func TestRunWithRejectedCircleCIToken(t *testing.T) {
 
 	f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "success")}})
 	useFakeAPI(t, f, "tok")
-	newFakeCircleCI(t, circlePoll{}).badToken = true
+	c := newFakeCircleCI(t, circlePoll{})
+	c.badToken = true
 
 	out := captureStdout(t, func() {
 		if err := run("", "", "", false, time.Millisecond, time.Minute, time.Minute, false); err != nil {
 			t.Errorf("run() = %v, want nil", err)
 		}
 	})
+	if paths := c.requestPaths(); !reflect.DeepEqual(paths, []string{"/api/v2/me"}) {
+		t.Errorf("CircleCI requests = %v, want only the token check", paths)
+	}
+	if i, j := strings.Index(out, "CircleCI rejected the token"), strings.Index(out, "waiting for the build"); i < 0 || j < 0 || i > j {
+		t.Errorf("the token warning should come before waiting starts:\n%s", out)
+	}
 	if !strings.Contains(out, "CircleCI rejected the token") || !strings.Contains(out, circleCITokensURL) {
 		t.Errorf("output lacks the token warning:\n%s", out)
 	}

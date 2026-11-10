@@ -153,6 +153,18 @@ func TestBuildMenuCancelled(t *testing.T) {
 	}
 }
 
+func TestBuildMenuWarning(t *testing.T) {
+	w := finished("aaaaaaaaaa", true, now)
+	w.Warning = "CircleCI rejected the token (expired or revoked?)"
+	m := buildMenu([]watch.Watch{w}, now)
+	if !strings.HasPrefix(m.title, "✅") {
+		t.Errorf("title = %q, want ✅: a warning does not make the build an error", m.title)
+	}
+	if got := m.entries[0].items[1].title; got != "Warning: CircleCI rejected the token (expired or revoked?)" {
+		t.Errorf("warning item = %q", got)
+	}
+}
+
 func TestBuildMenuErrorAndStopped(t *testing.T) {
 	gaveUp := finished("aaaaaaaaaa", false, now)
 	gaveUp.Error = "no checks appeared"

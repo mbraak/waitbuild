@@ -57,8 +57,9 @@ type Watch struct {
 	Started  time.Time `json:"started"`
 	Updated  time.Time `json:"updated"`
 	Finished bool      `json:"finished"`
-	OK       bool      `json:"ok"`              // every check succeeded; only meaningful when Finished
-	Error    string    `json:"error,omitempty"` // why waitbuild gave up, if it did
+	OK       bool      `json:"ok"`                // every check succeeded; only meaningful when Finished
+	Error    string    `json:"error,omitempty"`   // why waitbuild gave up, if it did
+	Warning  string    `json:"warning,omitempty"` // a problem that did not stop waitbuild, such as a rejected CircleCI token
 	Checks   []Check   `json:"checks"`
 	// CreatePullRequestURL is the page that creates a pull request for the
 	// branch. It is set when the first check appears and again once

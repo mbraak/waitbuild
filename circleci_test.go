@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v90/github"
+	"github.com/mbraak/waitbuild/internal/watch"
 )
 
 // --- fake CircleCI API -----------------------------------------------------
@@ -28,12 +29,13 @@ type circlePoll struct {
 // fakeCircleCI serves the CircleCI endpoints waitbuild uses. The pipeline
 // listing answers its n-th request with polls[n] (the last one repeats) and
 // the workflow listing answers with the workflows of the latest poll. With
-// noProject, every request gets HTTP 404.
+// noProject, every request gets HTTP 404; with badToken, HTTP 401.
 type fakeCircleCI struct {
 	mu        sync.Mutex
 	polls     []circlePoll
 	served    int
 	noProject bool
+	badToken  bool
 	requests  []*http.Request
 	srv       *httptest.Server
 }
@@ -55,6 +57,10 @@ func (f *fakeCircleCI) handle(w http.ResponseWriter, r *http.Request) {
 	f.requests = append(f.requests, r)
 	if f.noProject {
 		http.NotFound(w, r)
+		return
+	}
+	if f.badToken {
+		http.Error(w, "Invalid token provided.", http.StatusUnauthorized)
 		return
 	}
 	cur := f.polls[min(max(f.served-1, 0), len(f.polls)-1)]
@@ -308,17 +314,37 @@ func TestCircleCIChecks(t *testing.T) {
 		}
 	})
 
+	t.Run("a rejected token warns once and stops asking", func(t *testing.T) {
+		f := newFakeCircleCI(t, circlePoll{})
+		f.badToken = true
+		c := testCircleCI()
+		var warnings []string
+		c.warn = func(msg string) { warnings = append(warnings, msg) }
+		for range 2 {
+			got, found, err := c.checks(ctx, "sha")
+			if got != nil || found || err != nil {
+				t.Errorf("checks() = %v, %v, %v; want nothing", got, found, err)
+			}
+		}
+		if n := len(f.requestPaths()); n != 1 {
+			t.Errorf("%d requests, want 1", n)
+		}
+		if want := []string{errCircleCIUnauthorized.Error()}; !reflect.DeepEqual(warnings, want) {
+			t.Errorf("warnings = %q, want %q", warnings, want)
+		}
+	})
+
 	t.Run("other API errors fail", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "nope", http.StatusUnauthorized)
+			http.Error(w, "nope", http.StatusInternalServerError)
 		}))
 		t.Cleanup(srv.Close)
 		orig := circleCIBaseURL
 		circleCIBaseURL = srv.URL
 		t.Cleanup(func() { circleCIBaseURL = orig })
 		_, _, err := testCircleCI().checks(ctx, "sha")
-		if err == nil || !strings.Contains(err.Error(), "401") {
-			t.Errorf("checks() error = %v, want 401", err)
+		if err == nil || !strings.Contains(err.Error(), "500") {
+			t.Errorf("checks() error = %v, want 500", err)
 		}
 	})
 }
@@ -373,6 +399,19 @@ func TestListChecksWithCircleCI(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"SonarCloud", "circleci: test", "danger", "danger/danger"}
+		if !equalStrings(names(got), want) {
+			t.Errorf("names = %v, want %v", names(got), want)
+		}
+	})
+
+	t.Run("keeps them when CircleCI rejects the token", func(t *testing.T) {
+		f := newFakeAPI(t, gh)
+		newFakeCircleCI(t, circlePoll{}).badToken = true
+		got, err := listChecks(context.Background(), f.client(t), testCircleCI(), "o", "r", "sha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"SonarCloud", "ci/circleci: lint", "danger", "danger/danger", "lint"}
 		if !equalStrings(names(got), want) {
 			t.Errorf("names = %v, want %v", names(got), want)
 		}
@@ -446,5 +485,41 @@ func TestRunWithCircleCI(t *testing.T) {
 	req := c.requests[0]
 	if req.URL.Path != "/api/v2/project/gh/mbraak/waitbuild/pipeline" || req.URL.Query().Get("branch") != "main" {
 		t.Errorf("first CircleCI request = %s, want the pipelines of branch main", req.URL)
+	}
+}
+
+// An expired CircleCI token does not fail the build: it is watched through
+// what CircleCI posted to GitHub, and the watch file carries a warning.
+func TestRunWithRejectedCircleCIToken(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no gh, no osascript
+	t.Setenv("HOME", t.TempDir())
+	stateDir := t.TempDir()
+	t.Setenv("WAITBUILD_STATE_DIR", stateDir)
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("CIRCLE_TOKEN", "expired")
+	dir, _, _ := initRepo(t, "https://github.com/mbraak/waitbuild.git")
+	t.Chdir(dir)
+
+	f := newFakeAPI(t, &poll{statuses: []*github.RepoStatus{mkStatus("ci/circleci: test", "success")}})
+	useFakeAPI(t, f, "tok")
+	newFakeCircleCI(t, circlePoll{}).badToken = true
+
+	out := captureStdout(t, func() {
+		if err := run("", "", "", false, time.Millisecond, time.Minute, time.Minute, false); err != nil {
+			t.Errorf("run() = %v, want nil", err)
+		}
+	})
+	if !strings.Contains(out, "CircleCI rejected the token") || !strings.Contains(out, circleCITokensURL) {
+		t.Errorf("output lacks the token warning:\n%s", out)
+	}
+	if !strings.Contains(out, "✔ ci/circleci: test") {
+		t.Errorf("output lacks the status CircleCI posted to GitHub:\n%s", out)
+	}
+	watches, err := watch.Load(stateDir)
+	if err != nil || len(watches) != 1 {
+		t.Fatalf("watch.Load() = %v, %v; want one watch", watches, err)
+	}
+	if w := watches[0]; w.State() != watch.Success || w.Warning != errCircleCIUnauthorized.Error() {
+		t.Errorf("watch state = %s, warning = %q; want success with the token warning", w.State(), w.Warning)
 	}
 }

@@ -300,6 +300,9 @@ func (m model) rows() []row {
 		case watch.NoChecks:
 			info = append(info, "No checks ran; they may only run for pull requests")
 		}
+		if w.Warning != "" {
+			info = append(info, "Warning: "+w.Warning)
+		}
 		if len(w.Checks) == 0 && state == watch.Running {
 			info = append(info, "Waiting for checks to appear…")
 		}

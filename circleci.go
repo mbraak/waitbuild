@@ -43,7 +43,9 @@ type circleCI struct {
 	token   string
 	project string // project slug, "gh/owner/repo"
 	branch  string // narrows the pipeline search; "" searches all branches
-	missing bool   // CircleCI does not know the project; stop asking
+	missing bool   // CircleCI does not know the project or rejected the token; stop asking
+	// warn, when not nil, is told once when CircleCI rejects the token.
+	warn func(msg string)
 }
 
 // newCircleCI returns a client for the CircleCI project of owner/repo, or nil
@@ -152,6 +154,14 @@ type circleCIPage[T any] struct {
 // errCircleCINotFound is returned by get for HTTP 404.
 var errCircleCINotFound = errors.New("not found")
 
+// errCircleCIUnauthorized is returned by get for HTTP 401. CircleCI answers
+// the same "Invalid token provided." for an expired, revoked or mistyped
+// token, so which one it is cannot be told apart.
+var errCircleCIUnauthorized = errors.New("CircleCI rejected the token (expired or revoked?)")
+
+// circleCITokensURL is where a new CircleCI personal API token is created.
+const circleCITokensURL = "https://app.circleci.com/settings/user/tokens"
+
 // get fetches path (relative to the API) into v.
 func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any) error {
 	u := circleCIBaseURL + path
@@ -172,6 +182,8 @@ func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		return errCircleCINotFound
+	case resp.StatusCode == http.StatusUnauthorized:
+		return errCircleCIUnauthorized
 	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("%s: %s", path, resp.Status)
 	}
@@ -183,10 +195,26 @@ func (c *circleCI) get(ctx context.Context, path string, query url.Values, v any
 // has not set up yet, or has set up but not started any workflow of yet, is
 // reported as a single pending check, so that the build is not taken for
 // finished while it waits.
+//
+// When CircleCI rejects the token, c stops asking and tells c.warn, so that
+// the build is still watched through what CircleCI posts to GitHub.
 func (c *circleCI) checks(ctx context.Context, sha string) ([]check, bool, error) {
 	if c == nil || c.missing {
 		return nil, false, nil
 	}
+	checks, found, err := c.pipelineChecks(ctx, sha)
+	if errors.Is(err, errCircleCIUnauthorized) {
+		c.missing = true
+		if c.warn != nil {
+			c.warn(errCircleCIUnauthorized.Error())
+		}
+		return nil, false, nil
+	}
+	return checks, found, err
+}
+
+// pipelineChecks does the work of checks.
+func (c *circleCI) pipelineChecks(ctx context.Context, sha string) ([]check, bool, error) {
 	p, err := c.findPipeline(ctx, sha)
 	if errors.Is(err, errCircleCINotFound) {
 		c.missing = true

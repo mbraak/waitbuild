@@ -111,6 +111,9 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 	case watch.NoChecks:
 		e.items = append(e.items, item{title: "No checks ran; they may only run for pull requests"})
 	}
+	if w.Warning != "" {
+		e.items = append(e.items, item{title: "Warning: " + w.Warning})
+	}
 	if len(w.Checks) == 0 && state == watch.Running {
 		e.items = append(e.items, item{title: "Waiting for checks to appear…"})
 	}

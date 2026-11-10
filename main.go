@@ -210,6 +210,15 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	}
 
 	circle := newCircleCI(owner, repo, circleBranch)
+	// Recording only starts with the first poll, so a warning from the
+	// rerun check below still reaches the watch file.
+	rec := newRecorder(owner, repo, branch, sha)
+	if circle != nil {
+		circle.warn = func(msg string) {
+			printf("waitbuild: %s; watching without CircleCI. Create a new token at %s and run `circleci setup`\n", msg, circleCITokensURL)
+			rec.warn(msg)
+		}
+	}
 
 	if ifRerun {
 		checks, err := listChecks(ctx, client, circle, owner, repo, sha)
@@ -230,7 +239,6 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		printf("waitbuild: %s/%s has no GitHub Actions workflows, waiting for commit statuses and check runs only\n", owner, repo)
 	}
 
-	rec := newRecorder(owner, repo, branch, sha)
 	onPoll := rec.recordPolls(func() string {
 		return missingPullRequestURL(ctx, client, owner, repo, sha, circleBranch)
 	})

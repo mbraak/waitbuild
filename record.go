@@ -101,6 +101,15 @@ func (r *recorder) noChecks(createPRURL string) {
 	r.save()
 }
 
+// warn records a problem that did not stop waitbuild. It is saved with the
+// next poll or result.
+func (r *recorder) warn(msg string) {
+	if r == nil {
+		return
+	}
+	r.w.Warning = msg
+}
+
 // fail records that waitbuild gave up waiting.
 func (r *recorder) fail(err error) {
 	if r == nil {

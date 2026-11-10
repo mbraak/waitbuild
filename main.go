@@ -27,6 +27,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -516,11 +517,17 @@ func listRuns(ctx context.Context, client *github.Client, owner, repo, sha strin
 
 // listCheckRuns returns the check runs for sha created by GitHub Apps other
 // than GitHub Actions, whose runs listRuns already reports per workflow.
+// A commit GitHub does not have yet has no check runs: the pre-push hook
+// starts waitbuild before the push arrives, and while the workflow runs and
+// statuses endpoints then answer with empty lists, this one answers 422.
 func listCheckRuns(ctx context.Context, client *github.Client, owner, repo, sha string) ([]check, error) {
 	var all []check
 	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	for {
 		res, resp, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, sha, opts)
+		if err != nil && commitNotFound(err) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("listing check runs: %w", err)
 		}
@@ -582,6 +589,15 @@ func listStatuses(ctx context.Context, client *github.Client, owner, repo, sha s
 		opts.Page = resp.NextPage
 	}
 	return all, nil
+}
+
+// commitNotFound reports whether err is GitHub answering that the repository
+// has no commit with the requested SHA ("422 No commit found for SHA").
+func commitNotFound(err error) bool {
+	var resp *github.ErrorResponse
+	return errors.As(err, &resp) && resp.Response != nil &&
+		resp.Response.StatusCode == http.StatusUnprocessableEntity &&
+		strings.Contains(resp.Message, "No commit found")
 }
 
 // canceledRE matches the description of a commit status for a canceled job.

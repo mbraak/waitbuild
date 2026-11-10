@@ -305,6 +305,7 @@ type poll struct {
 	runs      []*github.WorkflowRun
 	checkRuns []*github.CheckRun
 	statuses  []*github.RepoStatus
+	noCommit  bool // answer the check runs as for a commit GitHub does not have yet
 }
 
 func runsOnly(runs ...*github.WorkflowRun) *poll { return &poll{runs: runs} }
@@ -365,6 +366,8 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/check-runs"):
 		if p := f.poll("/check-runs"); p == nil {
 			http.Error(w, "boom", http.StatusInternalServerError)
+		} else if p.noCommit {
+			http.Error(w, `{"message": "No commit found for SHA: sha"}`, http.StatusUnprocessableEntity)
 		} else {
 			_ = json.NewEncoder(w).Encode(github.ListCheckRunsResults{Total: github.Ptr(len(p.checkRuns)), CheckRuns: p.checkRuns})
 		}
@@ -667,6 +670,36 @@ func TestListChecks(t *testing.T) {
 		}
 	})
 
+	t.Run("reports nothing for a commit GitHub does not have yet", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{noCommit: true})
+		got, err := listChecks(context.Background(), f.client(t), nil, "o", "r", "sha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("checks = %v, want none", names(got))
+		}
+	})
+
+	t.Run("fails on other unprocessable check runs requests", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/check-runs"):
+				http.Error(w, `{"message": "Validation Failed"}`, http.StatusUnprocessableEntity)
+			case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+				_ = json.NewEncoder(w).Encode(github.WorkflowRuns{TotalCount: github.Ptr(0)})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		_, err := listChecks(context.Background(), clientFor(t, srv), nil, "o", "r", "sha")
+		if err == nil || !strings.Contains(err.Error(), "listing check runs") {
+			t.Fatalf("listChecks() error = %v, want a check runs error", err)
+		}
+	})
+
 	t.Run("fails when any source fails", func(t *testing.T) {
 		f := newFakeAPI(t, nil)
 		_, err := listChecks(context.Background(), f.client(t), nil, "o", "r", "sha")
@@ -785,6 +818,30 @@ func TestWaitForChecks(t *testing.T) {
 		}
 		if n := f.pollCount(); n != 3 {
 			t.Errorf("polled %d times, want 3", n)
+		}
+	})
+
+	t.Run("keeps polling until GitHub has the pushed commit", func(t *testing.T) {
+		f := newFakeAPI(t,
+			&poll{noCommit: true}, // started by the pre-push hook before the push arrived
+			&poll{noCommit: true},
+			runsOnly(mkRun(1, "build", "in_progress", "")),
+			runsOnly(done(1, "build", "success")),
+		)
+		checks, err := wait(f, context.Background(), appear)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(checks), []string{"build"}; !equalStrings(got, want) {
+			t.Errorf("names = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("gives up when the commit never reaches GitHub", func(t *testing.T) {
+		f := newFakeAPI(t, &poll{noCommit: true})
+		_, err := waitForChecks(context.Background(), f.client(t), nil, "o", "r", "deadbeef", interval, 20*time.Millisecond, true, nil)
+		if !errors.Is(err, errNoChecks) || !strings.Contains(err.Error(), "was the commit pushed?") {
+			t.Errorf("error = %v, want errNoChecks asking whether the commit was pushed", err)
 		}
 	})
 

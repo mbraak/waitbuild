@@ -20,8 +20,8 @@ type menu struct {
 	hasFinished bool // enables "Clear finished"
 }
 
-// tokenNotice is shown above the builds while a listed build has the CircleCI
-// token rejected; it opens the page that creates a new token.
+// tokenNotice is shown above the builds while the most recent build has the
+// CircleCI token rejected; it opens the page that creates a new token.
 var tokenNotice = item{title: "⚠️ CircleCI token rejected — create a new token…", url: watch.CircleCITokensURL}
 
 // entry is one watched build: a top-level item with a submenu.
@@ -58,10 +58,13 @@ const idleTitle = "○"
 func buildMenu(watches []watch.Watch, now time.Time) menu {
 	m := menu{title: idleTitle, tooltip: "waitbuild: no builds"}
 	running := 0
+	// Every watch checks the CircleCI token when it starts, so the most
+	// recently started one tells whether the current token is rejected;
+	// older watches may still carry the warning from a replaced token.
+	if len(watches) > 0 && watches[0].Warning == watch.CircleCITokenRejected {
+		m.notice = &tokenNotice
+	}
 	for _, w := range watches {
-		if w.Warning == watch.CircleCITokenRejected {
-			m.notice = &tokenNotice
-		}
 		if w.State() == watch.Running {
 			running++
 		} else {

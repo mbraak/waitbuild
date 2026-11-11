@@ -172,12 +172,17 @@ func TestBuildMenuTokenNotice(t *testing.T) {
 
 	rejected := finished("bbbbbbbbbb", true, now.Add(-time.Hour))
 	rejected.Warning = watch.CircleCITokenRejected
-	m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now), rejected}, now)
+	m := buildMenu([]watch.Watch{rejected}, now)
 	if m.notice == nil {
 		t.Fatal("no notice while a build has the CircleCI token rejected")
 	}
 	if m.notice.url != watch.CircleCITokensURL || !strings.Contains(m.notice.title, "CircleCI token rejected") {
 		t.Errorf("notice = %+v, want one opening the CircleCI tokens page", *m.notice)
+	}
+
+	// A newer build without the warning means the token was replaced.
+	if m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now), rejected}, now); m.notice != nil {
+		t.Errorf("notice = %+v after a newer build without a rejected token", *m.notice)
 	}
 
 	other := finished("cccccccccc", true, now)

@@ -153,6 +153,45 @@ func TestBuildMenuCancelled(t *testing.T) {
 	}
 }
 
+func TestBuildMenuWarning(t *testing.T) {
+	w := finished("aaaaaaaaaa", true, now)
+	w.Warning = "CircleCI rejected the token (expired or revoked?)"
+	m := buildMenu([]watch.Watch{w}, now)
+	if !strings.HasPrefix(m.title, "✅") {
+		t.Errorf("title = %q, want ✅: a warning does not make the build an error", m.title)
+	}
+	if got := m.entries[0].items[1].title; got != "Warning: CircleCI rejected the token (expired or revoked?)" {
+		t.Errorf("warning item = %q", got)
+	}
+}
+
+func TestBuildMenuTokenNotice(t *testing.T) {
+	if m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now)}, now); m.notice != nil {
+		t.Errorf("notice = %+v without a rejected token", *m.notice)
+	}
+
+	rejected := finished("bbbbbbbbbb", true, now.Add(-time.Hour))
+	rejected.Warning = watch.CircleCITokenRejected
+	m := buildMenu([]watch.Watch{rejected}, now)
+	if m.notice == nil {
+		t.Fatal("no notice while a build has the CircleCI token rejected")
+	}
+	if m.notice.url != watch.CircleCITokensURL || !strings.Contains(m.notice.title, "CircleCI token rejected") {
+		t.Errorf("notice = %+v, want one opening the CircleCI tokens page", *m.notice)
+	}
+
+	// A newer build without the warning means the token was replaced.
+	if m := buildMenu([]watch.Watch{finished("aaaaaaaaaa", true, now), rejected}, now); m.notice != nil {
+		t.Errorf("notice = %+v after a newer build without a rejected token", *m.notice)
+	}
+
+	other := finished("cccccccccc", true, now)
+	other.Warning = "something else"
+	if m := buildMenu([]watch.Watch{other}, now); m.notice != nil {
+		t.Errorf("notice = %+v for another warning", *m.notice)
+	}
+}
+
 func TestBuildMenuErrorAndStopped(t *testing.T) {
 	gaveUp := finished("aaaaaaaaaa", false, now)
 	gaveUp.Error = "no checks appeared"

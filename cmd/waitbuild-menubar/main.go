@@ -123,6 +123,7 @@ func (a *app) update() {
 // closes it. The top-level items are created up front, since systray can only
 // append items and the entries have to stay above "Clear finished" and "Quit".
 type tray struct {
+	notice   *actionItem
 	noBuilds *systray.MenuItem
 	entries  [maxEntries]*traySlot
 	clear    *actionItem
@@ -173,7 +174,9 @@ func (a *actionItem) set(title, tooltip string, action func()) {
 }
 
 func newTray() *tray {
-	t := &tray{noBuilds: systray.AddMenuItem("No builds", "")}
+	t := &tray{notice: newActionItem(systray.AddMenuItem("", ""))}
+	t.notice.Hide()
+	t.noBuilds = systray.AddMenuItem("No builds", "")
 	t.noBuilds.Disable()
 	for i := range t.entries {
 		item := systray.AddMenuItem("", "")
@@ -197,6 +200,11 @@ func (a *app) render(m menu) {
 	systray.SetTitle(m.title)
 	systray.SetTooltip(m.tooltip)
 
+	if m.notice != nil {
+		t.notice.set(m.notice.title, m.notice.url, a.action(*m.notice))
+	} else {
+		t.notice.Hide()
+	}
 	if len(m.entries) == 0 {
 		t.noBuilds.Show()
 	} else {

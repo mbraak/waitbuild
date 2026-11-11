@@ -57,8 +57,9 @@ type Watch struct {
 	Started  time.Time `json:"started"`
 	Updated  time.Time `json:"updated"`
 	Finished bool      `json:"finished"`
-	OK       bool      `json:"ok"`              // every check succeeded; only meaningful when Finished
-	Error    string    `json:"error,omitempty"` // why waitbuild gave up, if it did
+	OK       bool      `json:"ok"`                // every check succeeded; only meaningful when Finished
+	Error    string    `json:"error,omitempty"`   // why waitbuild gave up, if it did
+	Warning  string    `json:"warning,omitempty"` // a problem that did not stop waitbuild, such as a rejected CircleCI token
 	Checks   []Check   `json:"checks"`
 	// CreatePullRequestURL is the page that creates a pull request for the
 	// branch. It is set when the first check appears and again once
@@ -68,6 +69,14 @@ type Watch struct {
 	// workflows may only run for pull requests.
 	CreatePullRequestURL string `json:"create_pull_request_url,omitempty"`
 }
+
+// CircleCITokenRejected is the Warning of a watch whose CircleCI token was
+// rejected, and CircleCITokensURL the page that creates a new token. The menu
+// bar app recognizes the warning to offer that page.
+const (
+	CircleCITokenRejected = "CircleCI rejected the token (expired or revoked?)"
+	CircleCITokensURL     = "https://app.circleci.com/settings/user/tokens"
+)
 
 // State summarizes a watch for display.
 type State string

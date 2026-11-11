@@ -15,9 +15,14 @@ const maxEntries = 15
 type menu struct {
 	title       string // shown in the menu bar
 	tooltip     string
+	notice      *item // shown above the builds when not nil
 	entries     []entry
 	hasFinished bool // enables "Clear finished"
 }
+
+// tokenNotice is shown above the builds while the most recent build has the
+// CircleCI token rejected; it opens the page that creates a new token.
+var tokenNotice = item{title: "⚠️ CircleCI token rejected — create a new token…", url: watch.CircleCITokensURL}
 
 // entry is one watched build: a top-level item with a submenu.
 type entry struct {
@@ -53,6 +58,12 @@ const idleTitle = "○"
 func buildMenu(watches []watch.Watch, now time.Time) menu {
 	m := menu{title: idleTitle, tooltip: "waitbuild: no builds"}
 	running := 0
+	// Every watch checks the CircleCI token when it starts, so the most
+	// recently started one tells whether the current token is rejected;
+	// older watches may still carry the warning from a replaced token.
+	if len(watches) > 0 && watches[0].Warning == watch.CircleCITokenRejected {
+		m.notice = &tokenNotice
+	}
 	for _, w := range watches {
 		if w.State() == watch.Running {
 			running++
@@ -110,6 +121,9 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 		e.items = append(e.items, item{title: "waitbuild exited before the build finished"})
 	case watch.NoChecks:
 		e.items = append(e.items, item{title: "No checks ran; they may only run for pull requests"})
+	}
+	if w.Warning != "" {
+		e.items = append(e.items, item{title: "Warning: " + w.Warning})
 	}
 	if len(w.Checks) == 0 && state == watch.Running {
 		e.items = append(e.items, item{title: "Waiting for checks to appear…"})

@@ -79,6 +79,19 @@ func TestRowsExpandRunningBuilds(t *testing.T) {
 	}
 }
 
+func TestRowsWarning(t *testing.T) {
+	w := finished("aaaaaaaaaa", true, now)
+	w.Warning = "CircleCI rejected the token (expired or revoked?)"
+	m, _ := press(loaded(w), "enter")
+	want := []string{
+		"✅ o/r · feature · aaaaaaa — just now",
+		"Warning: CircleCI rejected the token (expired or revoked?)",
+	}
+	if got := texts(m.rows()); !reflect.DeepEqual(got, want) {
+		t.Errorf("rows = %q, want %q", got, want)
+	}
+}
+
 func TestRowsInfo(t *testing.T) {
 	gaveUp := finished("cccccccccc", false, now)
 	gaveUp.Error = "no checks appeared"

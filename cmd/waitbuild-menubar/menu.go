@@ -32,11 +32,18 @@ type entry struct {
 
 // item is a submenu entry. It opens url when set, dismisses the watch when
 // dismiss is set (stopping its waitbuild process if it is still running), and
-// is shown disabled otherwise.
+// is shown disabled otherwise. With pullRequestOf set, clicking it opens the
+// pull request of that commit instead of url when it has one.
 type item struct {
-	title   string
-	url     string
-	dismiss *watch.Watch
+	title         string
+	url           string
+	pullRequestOf *commit
+	dismiss       *watch.Watch
+}
+
+// commit is a commit in a repository ("owner/repo").
+type commit struct {
+	repo, sha string
 }
 
 var stateIcons = map[watch.State]string{
@@ -110,9 +117,15 @@ func buildEntry(w watch.Watch, now time.Time) entry {
 	}
 
 	e := entry{title: title}
-	e.items = append(e.items, item{title: "Open on GitHub", url: w.URL})
+	// The watch file only has the pull request when GitHub listed it as the
+	// build finished: not while the build runs, nor when the pull request was
+	// created afterwards or GitHub did not list it yet. So the pull request is
+	// looked up when the item is clicked. For the same reason "Create pull
+	// request" may be outdated; it then opens the pull request that exists.
+	pr := &commit{repo: repoKey(w), sha: w.SHA}
+	e.items = append(e.items, item{title: "Open on GitHub", url: w.URL, pullRequestOf: pr})
 	if w.CreatePullRequestURL != "" {
-		e.items = append(e.items, item{title: "Create pull request", url: w.CreatePullRequestURL})
+		e.items = append(e.items, item{title: "Create pull request", url: w.CreatePullRequestURL, pullRequestOf: pr})
 	}
 	switch state {
 	case watch.Error:

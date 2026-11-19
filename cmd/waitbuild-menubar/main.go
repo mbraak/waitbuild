@@ -5,7 +5,9 @@
 // watch); this app only reads those files, so it makes no GitHub API calls of
 // its own. The menu bar shows ⏳ with the number of running builds, or the
 // result of the most recent build. Each build has a submenu with its checks;
-// clicking a check opens it on GitHub. A build whose commit is in no pull
+// clicking a check opens it on GitHub. "Open on GitHub" opens the commit's
+// pull request, which it looks up with `waitbuild -pr` when clicked, or else
+// the page recorded in the watch file. A build whose commit is in no pull
 // request has an item that opens GitHub's page for creating one.
 //
 // Finished builds stay in the menu until they are dismissed, cleared or older
@@ -14,17 +16,19 @@
 //
 // A build that failed may be rerun on GitHub. To notice that, the app starts
 // `waitbuild -if-rerun` for every build that did not succeed once per
-// -rerun-interval (see rerunWatcher); the app itself still makes no GitHub
-// API calls.
+// -rerun-interval (see rerunWatcher); like the pull request lookup, that goes
+// through waitbuild, so the app itself still makes no GitHub API calls.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +40,7 @@ func main() {
 	interval := flag.Duration("interval", 2*time.Second, "how often to reread the watch files")
 	keep := flag.Duration("keep", 24*time.Hour, "how long finished builds stay in the menu")
 	rerunInterval := flag.Duration("rerun-interval", time.Minute, "how often to check builds that did not succeed for a rerun on GitHub (0 disables)")
-	waitbuildPath := flag.String("waitbuild", "", "path of the waitbuild binary used to check for reruns (default: next to this binary, else on PATH)")
+	waitbuildPath := flag.String("waitbuild", "", "path of the waitbuild binary used to look up pull requests and check for reruns (default: next to this binary, else on PATH)")
 	flag.Parse()
 
 	dir, err := watch.Dir()
@@ -45,14 +49,15 @@ func main() {
 		os.Exit(1)
 	}
 	a := &app{dir: dir, keep: *keep, refresh: make(chan struct{}, 1)}
-	if *rerunInterval > 0 {
-		bin := *waitbuildPath
-		if bin == "" {
-			bin, err = findWaitbuild()
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "waitbuild-menubar: not checking for reruns, waitbuild not found:", err)
-		} else {
+	bin := *waitbuildPath
+	if bin == "" {
+		bin, err = findWaitbuild()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "waitbuild-menubar: not looking up pull requests or checking for reruns, waitbuild not found:", err)
+	} else {
+		a.findPR = func(repo, sha string) string { return findPullRequest(bin, repo, sha) }
+		if *rerunInterval > 0 {
 			a.reruns = newRerunWatcher(bin, *rerunInterval)
 		}
 	}
@@ -66,8 +71,9 @@ type app struct {
 	keep    time.Duration
 	refresh chan struct{} // requests an immediate refresh, after a click changed the files
 	shown   *menu
-	tray    *tray         // nil until the first render
-	reruns  *rerunWatcher // nil when rerun checks are disabled
+	tray    *tray                         // nil until the first render
+	reruns  *rerunWatcher                 // nil when rerun checks are disabled
+	findPR  func(repo, sha string) string // pull request URL of a commit or ""; nil without waitbuild
 }
 
 func (a *app) loop(interval time.Duration) {
@@ -239,6 +245,21 @@ func (a *app) render(m menu) {
 // action returns what clicking it does, or nil when it is not clickable.
 func (a *app) action(it item) func() {
 	switch {
+	case it.pullRequestOf != nil && a.findPR != nil:
+		c := *it.pullRequestOf
+		return func() {
+			// The lookup takes a moment; do not block other clicks of
+			// this item meanwhile.
+			go func() {
+				url := it.url
+				if pr := a.findPR(c.repo, c.sha); pr != "" {
+					url = pr
+				}
+				if url != "" {
+					openURL(url)
+				}
+			}()
+		}
 	case it.url != "":
 		return func() { openURL(it.url) }
 	case it.dismiss != nil:
@@ -265,7 +286,36 @@ func (a *app) clearFinished() {
 	a.requestRefresh()
 }
 
-func openURL(url string) {
+// prLookupTimeout bounds how long clicking "Open on GitHub" waits for the pull
+// request before it opens the recorded page instead.
+const prLookupTimeout = 5 * time.Second
+
+// findPullRequest runs `waitbuild -pr` and returns the URL of the pull request
+// that contains sha in repo, or "" when there is none or the lookup failed.
+func findPullRequest(waitbuild, repo, sha string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), prLookupTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, waitbuild, "-pr", "-repo", repo, "-sha", sha).Output()
+	if err != nil {
+		return "" // also when there is no pull request: -pr then exits with 1
+	}
+	return pullRequestFromOutput(out)
+}
+
+// pullRequestFromOutput returns the URL that `waitbuild -pr` printed, or ""
+// when the output is not a GitHub URL.
+func pullRequestFromOutput(out []byte) string {
+	url := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(url, "https://github.com/") || strings.ContainsAny(url, " \n") {
+		return ""
+	}
+	return url
+}
+
+// openURL opens url in the browser; a variable so tests can replace it.
+var openURL = openInBrowser
+
+func openInBrowser(url string) {
 	cmd := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		cmd = "open"

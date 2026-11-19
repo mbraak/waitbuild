@@ -122,12 +122,12 @@ func main() {
 	timeout := flag.Duration("timeout", 45*time.Minute, "overall timeout")
 	notify := flag.Bool("notify", false, "show a desktop notification (macOS) when the build finishes")
 	testNotify := flag.Bool("test-notify", false, "send a test desktop notification and exit")
-	printPR := flag.Bool("pr", false, "print the URL of the pull request for the commit and exit")
+	printPR := flag.Bool("pr", false, "print the URL of the pull request for the commit and exit (with -repo, -sha is required)")
 	flag.BoolVar(&quiet, "quiet", false, "print nothing to the console; only the exit code (and -notify) report the result")
 	flag.Parse()
 
 	if *printPR {
-		if err := printPullRequest(*sha); err != nil {
+		if err := printPullRequest(*sha, *repo); err != nil {
 			fmt.Fprintln(os.Stderr, "waitbuild:", err)
 			os.Exit(1)
 		}
@@ -169,13 +169,9 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 	var owner string
 	circleBranch := branch // the real branch, if known, to find CircleCI pipelines by
 	if repo != "" {
-		full := repo
-		var ok bool
-		if owner, repo, ok = strings.Cut(full, "/"); !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
-			return fmt.Errorf("-repo %q is not of the form owner/repo", full)
-		}
-		if sha == "" {
-			return errors.New("-repo requires -sha")
+		var err error
+		if owner, repo, err = splitRepo(repo, sha); err != nil {
+			return err
 		}
 		if branch == "" {
 			branch = sha[:min(10, len(sha))]
@@ -707,17 +703,24 @@ func repoInfo() (gitInfo, error) {
 
 // printPullRequest prints the URL of the pull request that contains sha
 // (HEAD when empty). It fails when the commit has no pull request.
-func printPullRequest(sha string) error {
-	info, err := repoInfo()
-	if err != nil {
-		return err
-	}
-	if sha == "" {
-		sha = info.sha
-	}
-	owner, repo, err := parseGitHubRemote(info.remote)
-	if err != nil {
-		return err
+func printPullRequest(sha, repo string) error {
+	var owner string
+	if repo != "" {
+		var err error
+		if owner, repo, err = splitRepo(repo, sha); err != nil {
+			return err
+		}
+	} else {
+		info, err := repoInfo()
+		if err != nil {
+			return err
+		}
+		if sha == "" {
+			sha = info.sha
+		}
+		if owner, repo, err = parseGitHubRemote(info.remote); err != nil {
+			return err
+		}
 	}
 	token, err := githubToken()
 	if err != nil {
@@ -736,6 +739,18 @@ func printPullRequest(sha string) error {
 	}
 	fmt.Println(url)
 	return nil
+}
+
+// splitRepo splits the -repo flag ("owner/repo"), which requires -sha.
+func splitRepo(full, sha string) (owner, repo string, err error) {
+	owner, repo, ok := strings.Cut(full, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", "", fmt.Errorf("-repo %q is not of the form owner/repo", full)
+	}
+	if sha == "" {
+		return "", "", errors.New("-repo requires -sha")
+	}
+	return owner, repo, nil
 }
 
 // pullRequestURL returns the GitHub page of the pull request that contains

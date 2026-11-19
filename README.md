@@ -76,6 +76,7 @@ CircleCI posts to GitHub.
 waitbuild                 # build of HEAD
 waitbuild -sha <commit>   # build of a specific commit
 waitbuild -pr             # print the URL of the pull request for HEAD
+waitbuild -pr -repo owner/repo -sha <commit>  # ... for a commit in another repository
 waitbuild -quiet -notify  # print nothing; report via notification and exit code
 waitbuild -help           # all flags
 ```
@@ -110,7 +111,11 @@ start.
 `waitbuild-menubar` shows the builds waitbuild is waiting for in the macOS menu
 bar: ⏳ with the number of running builds, or ✅ / ❌ / 🚫 (cancelled) for the
 most recent result. Each build has a submenu with its checks, and clicking a
-check opens it on GitHub. Finished builds stay listed until you dismiss them, use
+check opens it on GitHub. "Open on GitHub" opens the commit's pull request:
+the app looks it up with `waitbuild -pr` when you click, so this also works
+while the build runs and for a pull request created after it finished. Without
+a pull request, or when the lookup fails or takes longer than 5 seconds, it
+opens the page waitbuild recorded (usually the commit's checks). Finished builds stay listed until you dismiss them, use
 "Clear finished", or they are older than `-keep` (24 hours by default). A
 running build has "Stop and dismiss" instead: it stops the waitbuild process
 that waits for the build, so you get no notification for it, and removes the
@@ -126,6 +131,8 @@ A build without checks (⚪) is checked once a minute like a failed one (see
 below), so it shows as running as soon as the pull request starts the
 workflows. Otherwise, once the build finished, the item stays until the build
 is dismissed, even when a pull request is created elsewhere afterwards.
+Clicking it then opens that pull request instead: like "Open on GitHub", it
+looks up the commit's pull request first.
 
 Every waitbuild process records its build in a JSON file in
 `~/Library/Caches/waitbuild/watches` (override with `WAITBUILD_STATE_DIR`).
@@ -140,8 +147,8 @@ rerun already finished, it waits for the build like any other waitbuild
 process: the menu shows the new result and you get a notification. A check
 that was still unfinished when waitbuild gave up does not count as running
 again: some checks of external apps never complete. The app looks for `waitbuild` next to its own
-binary, then on `PATH` (override with `-waitbuild`). The app itself makes no
-GitHub API calls.
+binary, then on `PATH` (override with `-waitbuild`); it is used for the pull
+request lookup too. The app itself makes no GitHub API calls.
 
 ```sh
 cd ~/waitbuild && rm -f ~/.local/bin/waitbuild-menubar && go build -o ~/.local/bin/waitbuild-menubar ./cmd/waitbuild-menubar

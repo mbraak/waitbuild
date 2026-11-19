@@ -62,7 +62,7 @@ func TestBuildMenuRunning(t *testing.T) {
 	dismissed := first
 	dismissed.Updated = time.Time{}
 	wantItems := []item{
-		{title: "Open on GitHub", url: "https://github.com/o/r/commit/1111111111/checks"},
+		{title: "Open on GitHub", url: "https://github.com/o/r/commit/1111111111/checks", pullRequestOf: &commit{repo: "o/r", sha: "1111111111"}},
 		{title: "✔ build — success", url: "https://x/build"},
 		{title: "⏳ lint — in_progress", url: "https://x/lint"},
 		{title: "Stop and dismiss", dismiss: &dismissed},
@@ -118,8 +118,8 @@ func TestBuildMenuCreatePullRequest(t *testing.T) {
 	w := finished("aaaaaaaaaa", true, now, watch.Check{Name: "build", Status: "completed", Conclusion: "success"})
 	w.CreatePullRequestURL = "https://github.com/o/r/compare/feature?expand=1"
 	want := []item{
-		{title: "Open on GitHub", url: w.URL},
-		{title: "Create pull request", url: w.CreatePullRequestURL},
+		{title: "Open on GitHub", url: w.URL, pullRequestOf: &commit{repo: "o/r", sha: w.SHA}},
+		{title: "Create pull request", url: w.CreatePullRequestURL, pullRequestOf: &commit{repo: "o/r", sha: w.SHA}},
 	}
 	if got := buildMenu([]watch.Watch{w}, now).entries[0].items[:2]; !reflect.DeepEqual(got, want) {
 		t.Errorf("items = %+v, want %+v", got, want)

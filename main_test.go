@@ -1537,7 +1537,7 @@ func TestPrintPullRequest(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		var err error
-		out := captureStdout(t, func() { err = printPullRequest("") })
+		out := captureStdout(t, func() { err = printPullRequest("", "") })
 		if err != nil {
 			t.Fatalf("printPullRequest() = %v, want nil", err)
 		}
@@ -1556,7 +1556,7 @@ func TestPrintPullRequest(t *testing.T) {
 		useFakeAPI(t, f, "tok")
 
 		var err error
-		out := captureStdout(t, func() { err = printPullRequest("") })
+		out := captureStdout(t, func() { err = printPullRequest("", "") })
 		if err == nil || !strings.Contains(err.Error(), "no pull request found") {
 			t.Fatalf("printPullRequest() = %v, want no-pull-request error", err)
 		}
@@ -1565,9 +1565,34 @@ func TestPrintPullRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("takes the repository from -repo", func(t *testing.T) {
+		t.Chdir(t.TempDir()) // not a git repository
+		f := newFakeAPI(t)
+		f.pulls = []*github.PullRequest{{State: github.Ptr("open"), HTMLURL: github.Ptr("https://github.com/o/r/pull/4")}}
+		useFakeAPI(t, f, "tok")
+
+		var err error
+		out := captureStdout(t, func() { err = printPullRequest("abc123", "o/r") })
+		if err != nil {
+			t.Fatalf("printPullRequest() = %v, want nil", err)
+		}
+		if out != "https://github.com/o/r/pull/4\n" {
+			t.Fatalf("stdout = %q", out)
+		}
+		if want := "/repos/o/r/commits/abc123/pulls"; f.requests[0].URL.Path != want {
+			t.Fatalf("request path = %q, want %q", f.requests[0].URL.Path, want)
+		}
+	})
+
+	t.Run("-repo requires -sha", func(t *testing.T) {
+		if err := printPullRequest("", "o/r"); err == nil || !strings.Contains(err.Error(), "requires -sha") {
+			t.Fatalf("printPullRequest() = %v, want -sha error", err)
+		}
+	})
+
 	t.Run("fails outside a repository", func(t *testing.T) {
 		t.Chdir(t.TempDir())
-		if err := printPullRequest(""); err == nil || !strings.Contains(err.Error(), "opening git repository") {
+		if err := printPullRequest("", ""); err == nil || !strings.Contains(err.Error(), "opening git repository") {
 			t.Fatalf("printPullRequest() = %v, want repository error", err)
 		}
 	})

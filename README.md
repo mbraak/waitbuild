@@ -137,7 +137,9 @@ the app runs `waitbuild -if-rerun` for every build that failed, gave up, was
 stopped or had no checks. That call exits right away while the build is unchanged. When a
 check is queued or running again, or every check now succeeds because the
 rerun already finished, it waits for the build like any other waitbuild
-process: the menu shows the new result and you get a notification. The app looks for `waitbuild` next to its own
+process: the menu shows the new result and you get a notification. A check
+that was still unfinished when waitbuild gave up does not count as running
+again: some checks of external apps never complete. The app looks for `waitbuild` next to its own
 binary, then on `PATH` (override with `-waitbuild`). The app itself makes no
 GitHub API calls.
 

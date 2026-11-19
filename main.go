@@ -40,6 +40,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/google/go-github/v90/github"
+	"github.com/mbraak/waitbuild/internal/watch"
 )
 
 var successConclusions = map[string]bool{
@@ -226,7 +227,7 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 		if err != nil {
 			return err
 		}
-		if !rerunLikely(checks) {
+		if !rerunLikely(checks, recordedChecks(owner, repo, sha)) {
 			return nil
 		}
 	}
@@ -321,16 +322,46 @@ func run(sha, branch, repo string, ifRerun bool, interval, appearTimeout, timeou
 // rerunLikely reports whether the checks of a build that did not succeed
 // show that it was rerun: a check is running again, or the rerun already
 // finished and every check now succeeds.
-func rerunLikely(checks []check) bool {
+//
+// recorded are the checks of the finished watch file, if any. A check that
+// was already unfinished there (waitbuild gave up on it, for example after a
+// timeout) is not running again; it is stuck, as happens with checks of
+// external apps that never complete. Counting it would make the
+// waitbuild-menubar app wait for the build again every time it checks.
+func rerunLikely(checks []check, recorded []watch.Check) bool {
 	if len(checks) == 0 {
 		return false
 	}
-	for _, c := range checks {
-		if !c.done() || !c.ok() {
-			return !c.done()
+	stuck := map[watch.Check]bool{}
+	for _, c := range recorded {
+		if !c.Done() {
+			stuck[watch.Check{Name: c.Name, URL: c.URL}] = true
 		}
 	}
-	return true
+	allOK := true
+	for _, c := range checks {
+		if !c.done() && !stuck[watch.Check{Name: c.name, URL: c.url}] {
+			return true
+		}
+		if !c.done() || !c.ok() {
+			allOK = false
+		}
+	}
+	return allOK
+}
+
+// recordedChecks returns the checks of the finished watch file of sha, or nil
+// when there is none.
+func recordedChecks(owner, repo, sha string) []watch.Check {
+	dir, err := watch.Dir()
+	if err != nil {
+		return nil
+	}
+	w, ok := watch.Get(dir, owner, repo, sha)
+	if !ok || !w.Finished {
+		return nil
+	}
+	return w.Checks
 }
 
 // nameWidth returns the column width for check names, so that long commit

@@ -73,17 +73,21 @@ func rerunnable(w watch.Watch) bool {
 // repoKey identifies the repository of w.
 func repoKey(w watch.Watch) string { return w.Owner + "/" + w.Repo }
 
+// branchKey identifies the branch of w.
+func branchKey(w watch.Watch) string { return repoKey(w) + "#" + w.Branch }
+
 // check starts a rerun check for every rerunnable watch that was not checked
 // within the interval. A build is not checked when a newer build of the same
-// repository was started: that one supersedes it. done is called after each
-// check.
+// branch was started: that one supersedes it. A newer build of another branch
+// does not, since the older build's branch may still be rerun. done is called
+// after each check.
 func (r *rerunWatcher) check(watches []watch.Watch, now time.Time, done func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	newest := map[string]time.Time{} // repo key -> start of its newest build
+	newest := map[string]time.Time{} // branch key -> start of its newest build
 	for _, w := range watches {
-		if k := repoKey(w); w.Started.After(newest[k]) {
+		if k := branchKey(w); w.Started.After(newest[k]) {
 			newest[k] = w.Started
 		}
 	}
@@ -92,7 +96,7 @@ func (r *rerunWatcher) check(watches []watch.Watch, now time.Time, done func()) 
 	for _, w := range watches {
 		key := watchKey(w)
 		current[key] = true
-		if !rerunnable(w) || newest[repoKey(w)].After(w.Started) || r.active[key] || now.Sub(r.checked[key]) < r.interval {
+		if !rerunnable(w) || newest[branchKey(w)].After(w.Started) || r.active[key] || now.Sub(r.checked[key]) < r.interval {
 			continue
 		}
 		args := []string{"-quiet", "-notify", "-if-rerun",

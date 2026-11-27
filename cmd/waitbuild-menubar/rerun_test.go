@@ -78,13 +78,18 @@ func TestRerunWatcherSkipsSupersededBuilds(t *testing.T) {
 	newer := finished("bbb", false, now)
 	otherRepo := finished("ccc", false, now.Add(-time.Hour))
 	otherRepo.Repo = "other"
+	// A newer build of another branch does not supersede it.
+	otherBranch := finished("fff", true, now.Add(time.Minute))
+	otherBranch.Repo = "other"
+	otherBranch.Branch = "another-feature"
 	// A newer build supersedes an older one whatever its state.
 	olderThanRunning := finished("ddd", false, now.Add(-time.Hour))
 	olderThanRunning.Repo = "busy"
 	busy := running("eee", now)
 	busy.Repo = "busy"
+	busy.Branch = olderThanRunning.Branch
 
-	r.check([]watch.Watch{newer, older, otherRepo, busy, olderThanRunning}, now, func() {})
+	r.check([]watch.Watch{newer, older, otherRepo, otherBranch, busy, olderThanRunning}, now, func() {})
 	var shas []string
 	for _, args := range f.args {
 		shas = append(shas, args[6])

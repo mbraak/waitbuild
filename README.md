@@ -141,7 +141,8 @@ terminal or git hook, and builds started before the app was launched.
 
 A build that failed can be rerun on GitHub. Once a minute (`-rerun-interval`)
 the app runs `waitbuild -if-rerun` for every build that failed, gave up, was
-stopped or had no checks. That call exits right away while the build is unchanged. When a
+stopped or had no checks, unless a newer build of the same branch was started.
+That call exits right away while the build is unchanged. When a
 check is queued or running again, or every check now succeeds because the
 rerun already finished, it waits for the build like any other waitbuild
 process: the menu shows the new result and you get a notification. A check
